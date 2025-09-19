@@ -1,4 +1,6 @@
-use chrono::{DateTime, Timelike, Utc};
+use chrono::{DateTime, Local, Timelike, Utc};
+use chrono_english::Dialect;
+use regex::Regex;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -63,37 +65,63 @@ fn save_todos(todos: &Vec<Todo>) {
 }
 
 fn parse_due_date(text: &str) -> Option<DateTime<Utc>> {
+    // Try chrono-english for fuzzy parsing
+    if let Ok(dt_local) = chrono_english::parse_date_string(text, Local::now(), Dialect::Us) {
+        return Some(dt_local.with_timezone(&Utc));
+    }
+
+    // Fallback to regex for specific cases
     let lower = text.to_lowercase();
     let now = Utc::now();
-    if lower.contains("tomorrow") {
-        let tomorrow = now + chrono::Duration::days(1);
-        if let Some(time_str) = extract_time(&lower) {
-            if let Some(time) = parse_time(&time_str) {
-                let datetime = tomorrow.date_naive().and_time(time).and_utc();
-                return Some(datetime);
-            }
-        }
-        Some(tomorrow.date_naive().and_hms_opt(9, 0, 0)?.and_utc())
-    } else if lower.contains("at ") {
-        if let Some(time_str) = extract_time(&lower) {
-            if let Some(time) = parse_time(&time_str) {
-                let datetime = now.date_naive().and_time(time);
-                let datetime = if datetime < now.naive_utc() {
-                    datetime + chrono::Duration::days(1)
-                } else {
-                    datetime
-                };
-                return Some(datetime.and_utc());
-            }
-        }
-        None
-    } else {
-        None
+
+    // Extract time anywhere in text
+    if let Some(time) = extract_time_anywhere(&lower) {
+        let datetime = now.date_naive().and_time(time);
+        let datetime = if datetime < now.naive_utc() {
+            datetime + chrono::Duration::days(1)
+        } else {
+            datetime
+        };
+        return Some(datetime.and_utc());
     }
+
+    None
+}
+
+fn extract_time_anywhere(text: &str) -> Option<chrono::NaiveTime> {
+    // 24-hour format: 21:35
+    let re_24 = Regex::new(r"\b(\d{1,2}):(\d{2})\b").unwrap();
+    if let Some(cap) = re_24.captures(text) {
+        if let (Ok(hour), Ok(min)) = (cap[1].parse::<u32>(), cap[2].parse::<u32>()) {
+            if hour < 24 && min < 60 {
+                return chrono::NaiveTime::from_hms_opt(hour, min, 0);
+            }
+        }
+    }
+
+    // 12-hour format: 9pm, 11:30am
+    let re_12 = Regex::new(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b").unwrap();
+    if let Some(cap) = re_12.captures(text) {
+        let hour: u32 = cap[1].parse().unwrap();
+        let min: u32 = cap.get(2).map_or(0, |m| m.as_str().parse().unwrap());
+        let am_pm = &cap[3];
+        let hour_24 = if am_pm == "pm" && hour != 12 { hour + 12 } else if am_pm == "am" && hour == 12 { 0 } else { hour };
+        if hour_24 < 24 && min < 60 {
+            return chrono::NaiveTime::from_hms_opt(hour_24, min, 0);
+        }
+    }
+
+    None
 }
 
 fn parse_schedule(input: &str) -> Option<DateTime<Utc>> {
-    if let Some(time) = parse_time(input) {
+    // Try chrono-english
+    if let Ok(dt_local) = chrono_english::parse_date_string(input, Local::now(), Dialect::Us) {
+        return Some(dt_local.with_timezone(&Utc));
+    }
+
+    // Fallback to regex
+    if let Some(time) = extract_time_anywhere(input) {
         let now = Utc::now();
         let datetime = now.date_naive().and_time(time);
         let datetime = if datetime < now.naive_utc() {
@@ -107,35 +135,7 @@ fn parse_schedule(input: &str) -> Option<DateTime<Utc>> {
     }
 }
 
-fn parse_time(time_str: &str) -> Option<chrono::NaiveTime> {
-    // Try 24-hour with minutes: 15:00
-    if let Ok(t) = chrono::NaiveTime::parse_from_str(time_str, "%H:%M") {
-        return Some(t);
-    }
-    // Try 12-hour with minutes: 3:30pm
-    if let Ok(t) = chrono::NaiveTime::parse_from_str(time_str, "%I:%M%p") {
-        return Some(t);
-    }
-    // Try 12-hour without minutes: 7pm
-    if let Ok(t) = chrono::NaiveTime::parse_from_str(time_str, "%I%p") {
-        return Some(t);
-    }
-    None
-}
 
-fn extract_time(text: &str) -> Option<String> {
-    if let Some(start) = text.find("at ") {
-        let after_at = &text[start + 3..];
-        let words: Vec<&str> = after_at.split_whitespace().collect();
-        if !words.is_empty() {
-            let time = words[0];
-            if time.contains(':') || time.ends_with("am") || time.ends_with("pm") {
-                return Some(time.to_string());
-            }
-        }
-    }
-    None
-}
 
 fn check_notifications(todos: &Vec<Todo>) {
     let now = Utc::now();
@@ -153,20 +153,31 @@ fn check_notifications(todos: &Vec<Todo>) {
 }
 
 fn format_due_time(due: DateTime<Utc>) -> String {
-    let now = Utc::now();
-    let today = now.date_naive();
-    let due_date = due.date_naive();
-    let due_time = due.time();
+    let now_local = Local::now();
+    let today = now_local.date_naive();
+    let due_local = due.with_timezone(&Local);
+    let due_date = due_local.date_naive();
+    let due_time = due_local.time();
+    let hour = due_time.hour();
+    let min = due_time.minute();
 
     if due_date == today {
-        if due_time.hour() == 0 && due_time.minute() == 0 {
+        if hour == 0 && min == 0 {
             "Today".to_string()
         } else {
-            format!("Today {:02}:{:02}", due_time.hour(), due_time.minute())
+            let hour12 = if hour == 0 { 12 } else if hour > 12 { hour - 12 } else { hour };
+            let am_pm = if hour >= 12 { "pm" } else { "am" };
+            format!("Today {:02}:{:02}{}", hour12, min, am_pm)
         }
     } else if due_date == today + chrono::Duration::days(1) {
-        "Tomorrow".to_string()
-    } else if due < now {
+        if hour == 0 && min == 0 {
+            "Tomorrow".to_string()
+        } else {
+            let hour12 = if hour == 0 { 12 } else if hour > 12 { hour - 12 } else { hour };
+            let am_pm = if hour >= 12 { "pm" } else { "am" };
+            format!("Tomorrow {:02}:{:02}{}", hour12, min, am_pm)
+        }
+    } else if due_local < now_local {
         "Overdue".to_string()
     } else {
         due_date.format("%b %d").to_string()
@@ -271,11 +282,6 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                         app.input_mode = InputMode::Rescheduling;
                         app.input.clear();
                         app.editing_index = Some(app.selected);
-                        if let Some(todo) = app.todos.get(app.selected) {
-                            if let Some(due) = todo.due_date {
-                                app.input = format_due_time(due).to_lowercase().replace("today ", "").replace("tomorrow ", "");
-                            }
-                        }
                     }
                     KeyCode::Char('d') => {
                         if !app.todos.is_empty() {
@@ -296,42 +302,37 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                 },
                 InputMode::Adding | InputMode::Editing | InputMode::Rescheduling => match key.code {
                     KeyCode::Enter => {
-                        if !app.input.is_empty() {
-                            let due_date = parse_due_date(&app.input);
-                            let text = if due_date.is_some() {
-                                // Remove time part from text
-                                let lower = app.input.to_lowercase();
-                                if let Some(at_pos) = lower.find("at ") {
-                                    app.input[..at_pos].trim().to_string()
-                                } else if lower.contains("tomorrow") {
-                                    app.input.replace("tomorrow", "").trim().to_string()
-                                } else {
-                                    app.input.clone()
-                                }
-                            } else {
-                                app.input.clone()
-                            };
+                        if matches!(app.input_mode, InputMode::Rescheduling) {
+                            // Handle rescheduling - allow empty to clear
                             if let Some(index) = app.editing_index {
                                 if let Some(todo) = app.todos.get_mut(index) {
-                                    if matches!(app.input_mode, InputMode::Rescheduling) {
-                                        // Only update due_date
-                                        todo.due_date = parse_schedule(&app.input);
+                                    todo.due_date = if app.input.is_empty() {
+                                        None
                                     } else {
-                                        // Editing text and due_date
+                                        parse_schedule(&app.input)
+                                    };
+                                }
+                            }
+                        } else {
+                            // Handle adding/editing - require non-empty
+                            if !app.input.is_empty() {
+                                let due_date = parse_due_date(&app.input);
+                                let text = app.input.clone();
+                                if let Some(index) = app.editing_index {
+                                    if let Some(todo) = app.todos.get_mut(index) {
                                         todo.text = text;
                                         todo.due_date = due_date;
                                     }
+                                } else {
+                                    let mut todo = Todo::new(app.todos.len() as u32, text);
+                                    todo.due_date = due_date;
+                                    app.todos.push(todo);
                                 }
-                            } else {
-                                // Adding new
-                                let mut todo = Todo::new(app.todos.len() as u32, text);
-                                todo.due_date = due_date;
-                                app.todos.push(todo);
                             }
-                            app.save();
                         }
                         app.input_mode = InputMode::Normal;
                         app.editing_index = None;
+                        app.save();
                     }
                     KeyCode::Char(c) => {
                         app.input.push(c);
@@ -357,8 +358,6 @@ fn ui(f: &mut Frame, app: &mut App) {
         .constraints([Constraint::Min(1), Constraint::Length(3), Constraint::Length(2)].as_ref())
         .split(size);
 
-    let inner_width = (size.width as usize).saturating_sub(4); // borders and padding
-
     let items: Vec<ListItem> = app
         .todos
         .iter()
@@ -377,15 +376,12 @@ fn ui(f: &mut Frame, app: &mut App) {
                 Style::default()
             };
             let main_content = format!("{} {}", prefix, todo.text);
-            let main_len = main_content.chars().count();
 
             let mut spans = vec![Span::styled(main_content, style)];
 
             if let Some(_due) = todo.due_date {
-                let icon = "🕒"; // Clock icon
-                let icon_len = icon.chars().count();
-                let spaces_needed = inner_width.saturating_sub(main_len + icon_len);
-                spans.push(Span::raw(" ".repeat(spaces_needed)));
+                let icon = "⏰"; // Clock icon
+                spans.push(Span::raw(" "));
                 spans.push(Span::styled(icon, Style::default().fg(Color::Cyan)));
             }
 
