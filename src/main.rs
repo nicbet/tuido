@@ -67,7 +67,7 @@ fn save_todos(todos: &Vec<Todo>) {
 
 fn parse_due_date(text: &str) -> Option<DateTime<Utc>> {
     let lower = text.to_lowercase();
-    let local_offset = Local::now().offset().clone();
+    let local_offset = *Local::now().offset();
     let now_local = Utc::now().with_timezone(&local_offset);
 
     // Check for tomorrow
@@ -103,12 +103,11 @@ fn parse_due_date(text: &str) -> Option<DateTime<Utc>> {
 fn extract_time_anywhere(text: &str) -> Option<chrono::NaiveTime> {
     // 24-hour format: 21:35
     let re_24 = Regex::new(r"(?i)\b(\d{1,2}):(\d{2})\b").unwrap();
-    if let Some(cap) = re_24.captures(text) {
-        if let (Ok(hour), Ok(min)) = (cap[1].parse::<u32>(), cap[2].parse::<u32>()) {
-            if hour < 24 && min < 60 {
-                return chrono::NaiveTime::from_hms_opt(hour, min, 0);
-            }
-        }
+    if let Some(cap) = re_24.captures(text)
+        && let Ok(hour) = cap[1].parse::<u32>()
+        && let Ok(min) = cap[2].parse::<u32>()
+        && hour < 24 && min < 60 {
+        return chrono::NaiveTime::from_hms_opt(hour, min, 0);
     }
 
     // 12-hour format: 9pm, 11:30am
@@ -140,7 +139,7 @@ fn clean_text(text: &str) -> String {
 
 fn parse_schedule(input: &str) -> Option<DateTime<Utc>> {
     if let Some(time) = extract_time_anywhere(input) {
-        let local_offset = Local::now().offset().clone();
+        let local_offset = *Local::now().offset();
         let now_local = Utc::now().with_timezone(&local_offset);
         let date = now_local.date_naive();
         let datetime = date.and_time(time);
@@ -161,20 +160,19 @@ fn parse_schedule(input: &str) -> Option<DateTime<Utc>> {
 fn check_notifications(todos: &Vec<Todo>) {
     let now = Utc::now();
     for todo in todos {
-        if let Some(due) = todo.due_date {
-            if due <= now && !todo.completed && !todo.suspended {
-                Notification::new()
-                    .summary("Todo Reminder")
-                    .body(&format!("Reminder: {}", todo.text))
-                    .show()
-                    .unwrap();
-            }
+        if let Some(due) = todo.due_date
+            && due <= now && !todo.completed && !todo.suspended {
+            Notification::new()
+                .summary("Todo Reminder")
+                .body(&format!("Reminder: {}", todo.text))
+                .show()
+                .unwrap();
         }
     }
 }
 
 fn format_due_time(due: DateTime<Utc>) -> String {
-    let local_offset = Local::now().offset().clone();
+    let local_offset = *Local::now().offset();
     let now_local = Utc::now().with_timezone(&local_offset);
     let today = now_local.date_naive();
     let due_local = due.with_timezone(&local_offset);
@@ -352,14 +350,13 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                     KeyCode::Enter => {
                         if matches!(app.input_mode, InputMode::Rescheduling) {
                             // Handle rescheduling - allow empty to clear
-                            if let Some(index) = app.editing_index {
-                                if let Some(todo) = app.todos.get_mut(index) {
-                                    todo.due_date = if app.input.is_empty() {
-                                        None
-                                    } else {
-                                        parse_schedule(&app.input)
-                                    };
-                                }
+                            if let Some(index) = app.editing_index
+                                && let Some(todo) = app.todos.get_mut(index) {
+                                todo.due_date = if app.input.is_empty() {
+                                    None
+                                } else {
+                                    parse_schedule(&app.input)
+                                };
                             }
                         } else {
                             // Handle adding/editing - require non-empty
