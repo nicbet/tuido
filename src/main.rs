@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Timelike, Utc};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -68,7 +68,7 @@ fn parse_due_date(text: &str) -> Option<DateTime<Utc>> {
     if lower.contains("tomorrow") {
         let tomorrow = now + chrono::Duration::days(1);
         if let Some(time_str) = extract_time(&lower) {
-            if let Ok(time) = chrono::NaiveTime::parse_from_str(&time_str, "%I:%M%p") {
+            if let Some(time) = parse_time(&time_str) {
                 let datetime = tomorrow.date_naive().and_time(time).and_utc();
                 return Some(datetime);
             }
@@ -76,7 +76,7 @@ fn parse_due_date(text: &str) -> Option<DateTime<Utc>> {
         Some(tomorrow.date_naive().and_hms_opt(9, 0, 0)?.and_utc())
     } else if lower.contains("at ") {
         if let Some(time_str) = extract_time(&lower) {
-            if let Ok(time) = chrono::NaiveTime::parse_from_str(&time_str, "%I:%M%p") {
+            if let Some(time) = parse_time(&time_str) {
                 let datetime = now.date_naive().and_time(time);
                 let datetime = if datetime < now.naive_utc() {
                     datetime + chrono::Duration::days(1)
@@ -90,6 +90,27 @@ fn parse_due_date(text: &str) -> Option<DateTime<Utc>> {
     } else {
         None
     }
+}
+
+fn parse_schedule(input: &str) -> Option<DateTime<Utc>> {
+    if let Some(time) = parse_time(input) {
+        let now = Utc::now();
+        let datetime = now.date_naive().and_time(time);
+        let datetime = if datetime < now.naive_utc() {
+            datetime + chrono::Duration::days(1)
+        } else {
+            datetime
+        };
+        Some(datetime.and_utc())
+    } else {
+        None
+    }
+}
+
+fn parse_time(time_str: &str) -> Option<chrono::NaiveTime> {
+    chrono::NaiveTime::parse_from_str(time_str, "%I:%M%p")
+        .or_else(|_| chrono::NaiveTime::parse_from_str(time_str, "%I%p"))
+        .ok()
 }
 
 fn extract_time(text: &str) -> Option<String> {
@@ -121,10 +142,32 @@ fn check_notifications(todos: &Vec<Todo>) {
     }
 }
 
+fn format_due_time(due: DateTime<Utc>) -> String {
+    let now = Utc::now();
+    let today = now.date_naive();
+    let due_date = due.date_naive();
+    let due_time = due.time();
+
+    if due_date == today {
+        if due_time.hour() == 0 && due_time.minute() == 0 {
+            "Today".to_string()
+        } else {
+            format!("Today {:02}:{:02}", due_time.hour(), due_time.minute())
+        }
+    } else if due_date == today + chrono::Duration::days(1) {
+        "Tomorrow".to_string()
+    } else if due < now {
+        "Overdue".to_string()
+    } else {
+        due_date.format("%b %d").to_string()
+    }
+}
+
 enum InputMode {
     Normal,
     Adding,
     Editing,
+    Rescheduling,
 }
 
 struct App {
@@ -214,6 +257,16 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                             app.editing_index = Some(app.selected);
                         }
                     }
+                    KeyCode::Char('r') => {
+                        app.input_mode = InputMode::Rescheduling;
+                        app.input.clear();
+                        app.editing_index = Some(app.selected);
+                        if let Some(todo) = app.todos.get(app.selected) {
+                            if let Some(due) = todo.due_date {
+                                app.input = format_due_time(due).to_lowercase().replace("today ", "").replace("tomorrow ", "");
+                            }
+                        }
+                    }
                     KeyCode::Char('d') => {
                         if !app.todos.is_empty() {
                             app.todos.remove(app.selected);
@@ -231,7 +284,7 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                     }
                     _ => {}
                 },
-                InputMode::Adding | InputMode::Editing => match key.code {
+                InputMode::Adding | InputMode::Editing | InputMode::Rescheduling => match key.code {
                     KeyCode::Enter => {
                         if !app.input.is_empty() {
                             let due_date = parse_due_date(&app.input);
@@ -249,10 +302,15 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                                 app.input.clone()
                             };
                             if let Some(index) = app.editing_index {
-                                // Editing existing
                                 if let Some(todo) = app.todos.get_mut(index) {
-                                    todo.text = text;
-                                    todo.due_date = due_date;
+                                    if matches!(app.input_mode, InputMode::Rescheduling) {
+                                        // Only update due_date
+                                        todo.due_date = parse_schedule(&app.input);
+                                    } else {
+                                        // Editing text and due_date
+                                        todo.text = text;
+                                        todo.due_date = due_date;
+                                    }
                                 }
                             } else {
                                 // Adding new
@@ -286,13 +344,10 @@ fn ui(f: &mut Frame, app: &mut App) {
     let size = f.size();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints(
-            match app.input_mode {
-                InputMode::Normal => [Constraint::Percentage(100)].as_ref(),
-                InputMode::Adding | InputMode::Editing => [Constraint::Min(1), Constraint::Length(3)].as_ref(),
-            }
-        )
+        .constraints([Constraint::Min(1), Constraint::Length(3), Constraint::Length(2)].as_ref())
         .split(size);
+
+    let inner_width = (size.width as usize).saturating_sub(4); // borders and padding
 
     let items: Vec<ListItem> = app
         .todos
@@ -311,8 +366,20 @@ fn ui(f: &mut Frame, app: &mut App) {
             } else {
                 Style::default()
             };
-            let content = format!("{} {}", prefix, todo.text);
-            let line = Line::from(vec![Span::styled(content, style)]);
+            let main_content = format!("{} {}", prefix, todo.text);
+            let main_len = main_content.chars().count();
+
+            let mut spans = vec![Span::styled(main_content, style)];
+
+            if let Some(_due) = todo.due_date {
+                let icon = "\u{f64f}"; // Nerd font clock icon
+                let icon_len = icon.chars().count();
+                let spaces_needed = inner_width.saturating_sub(main_len + icon_len);
+                spans.push(Span::raw(" ".repeat(spaces_needed)));
+                spans.push(Span::styled(icon, Style::default().fg(Color::Cyan)));
+            }
+
+            let line = Line::from(spans);
             ListItem::new(line).style(if i == app.selected {
                 Style::default().bg(Color::Blue)
             } else {
@@ -328,12 +395,42 @@ fn ui(f: &mut Frame, app: &mut App) {
 
     f.render_widget(list, chunks[0]);
 
-    if let InputMode::Adding | InputMode::Editing = app.input_mode {
-        let title = if app.editing_index.is_some() { "Edit Todo" } else { "Add Todo" };
+    let status_text = "↑↓/jk: navigate  Space: toggle  a: add  e: edit  r: reschedule  d: delete  s: suspend  q: quit";
+    let status = Paragraph::new(status_text)
+        .style(Style::default().fg(Color::White).bg(Color::Black))
+        .block(Block::default().borders(Borders::TOP));
+    f.render_widget(status, chunks[2]);
+
+    if let InputMode::Adding | InputMode::Editing | InputMode::Rescheduling = app.input_mode {
+        let title = match app.input_mode {
+            InputMode::Adding => "Add Todo",
+            InputMode::Editing => "Edit Todo",
+            InputMode::Rescheduling => "Reschedule Todo",
+            _ => "Input",
+        };
         let input = Paragraph::new(app.input.as_str())
             .style(Style::default().fg(Color::Yellow))
             .block(Block::default().borders(Borders::ALL).title(title).padding(Padding::new(1, 1, 0, 0)));
         f.render_widget(input, chunks[1]);
         f.set_cursor(chunks[1].x + 2 + app.input.len() as u16, chunks[1].y + 1);
+    } else {
+        // Show metadata for selected todo
+        let metadata = if let Some(todo) = app.todos.get(app.selected) {
+            if todo.completed {
+                "Status: Completed".to_string()
+            } else if todo.suspended {
+                "Status: Suspended".to_string()
+            } else if let Some(due) = todo.due_date {
+                format!("Scheduled for: {}", format_due_time(due))
+            } else {
+                "No schedule set".to_string()
+            }
+        } else {
+            "No todos".to_string()
+        };
+        let metadata_paragraph = Paragraph::new(metadata)
+            .style(Style::default().fg(Color::Green))
+            .block(Block::default().borders(Borders::ALL).title("Info").padding(Padding::new(1, 1, 0, 0)));
+        f.render_widget(metadata_paragraph, chunks[1]);
     }
 }
