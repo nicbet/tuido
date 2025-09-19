@@ -410,7 +410,7 @@ fn ui(f: &mut Frame, app: &mut App) {
 
             let line = Line::from(spans);
             ListItem::new(line).style(if i == app.selected {
-                Style::default().bg(Color::Blue)
+                Style::default().add_modifier(Modifier::REVERSED)
             } else {
                 Style::default()
             })
