@@ -108,9 +108,19 @@ fn parse_schedule(input: &str) -> Option<DateTime<Utc>> {
 }
 
 fn parse_time(time_str: &str) -> Option<chrono::NaiveTime> {
-    chrono::NaiveTime::parse_from_str(time_str, "%I:%M%p")
-        .or_else(|_| chrono::NaiveTime::parse_from_str(time_str, "%I%p"))
-        .ok()
+    // Try 24-hour with minutes: 15:00
+    if let Ok(t) = chrono::NaiveTime::parse_from_str(time_str, "%H:%M") {
+        return Some(t);
+    }
+    // Try 12-hour with minutes: 3:30pm
+    if let Ok(t) = chrono::NaiveTime::parse_from_str(time_str, "%I:%M%p") {
+        return Some(t);
+    }
+    // Try 12-hour without minutes: 7pm
+    if let Ok(t) = chrono::NaiveTime::parse_from_str(time_str, "%I%p") {
+        return Some(t);
+    }
+    None
 }
 
 fn extract_time(text: &str) -> Option<String> {
@@ -372,7 +382,7 @@ fn ui(f: &mut Frame, app: &mut App) {
             let mut spans = vec![Span::styled(main_content, style)];
 
             if let Some(_due) = todo.due_date {
-                let icon = "\u{f64f}"; // Nerd font clock icon
+                let icon = "🕒"; // Clock icon
                 let icon_len = icon.chars().count();
                 let spaces_needed = inner_width.saturating_sub(main_len + icon_len);
                 spans.push(Span::raw(" ".repeat(spaces_needed)));
