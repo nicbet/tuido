@@ -1,5 +1,4 @@
-use chrono::{DateTime, Local, Timelike, Utc};
-use chrono_english::Dialect;
+use chrono::{DateTime, Local, TimeZone, Timelike, Utc};
 use regex::Regex;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
@@ -65,24 +64,35 @@ fn save_todos(todos: &Vec<Todo>) {
 }
 
 fn parse_due_date(text: &str) -> Option<DateTime<Utc>> {
-    // Try chrono-english for fuzzy parsing
-    if let Ok(dt_local) = chrono_english::parse_date_string(text, Local::now(), Dialect::Us) {
-        return Some(dt_local.with_timezone(&Utc));
-    }
-
-    // Fallback to regex for specific cases
     let lower = text.to_lowercase();
-    let now = Utc::now();
+    let local_offset = Local::now().offset().clone();
+    let now_local = Utc::now().with_timezone(&local_offset);
+
+    // Check for tomorrow
+    if lower.contains("tomorrow") {
+        let tomorrow = now_local + chrono::Duration::days(1);
+        let date = tomorrow.date_naive();
+        if let Some(time) = extract_time_anywhere(&lower) {
+            let datetime = date.and_time(time);
+            let datetime_fixed = local_offset.from_local_datetime(&datetime).unwrap();
+            return Some(datetime_fixed.with_timezone(&Utc));
+        }
+        let datetime = date.and_hms_opt(9, 0, 0).unwrap();
+        let datetime_fixed = local_offset.from_local_datetime(&datetime).unwrap();
+        return Some(datetime_fixed.with_timezone(&Utc));
+    }
 
     // Extract time anywhere in text
     if let Some(time) = extract_time_anywhere(&lower) {
-        let datetime = now.date_naive().and_time(time);
-        let datetime = if datetime < now.naive_utc() {
+        let date = now_local.date_naive();
+        let datetime = date.and_time(time);
+        let datetime = if datetime < now_local.naive_local() {
             datetime + chrono::Duration::days(1)
         } else {
             datetime
         };
-        return Some(datetime.and_utc());
+        let datetime_fixed = local_offset.from_local_datetime(&datetime).unwrap();
+        return Some(datetime_fixed.with_timezone(&Utc));
     }
 
     None
@@ -90,7 +100,7 @@ fn parse_due_date(text: &str) -> Option<DateTime<Utc>> {
 
 fn extract_time_anywhere(text: &str) -> Option<chrono::NaiveTime> {
     // 24-hour format: 21:35
-    let re_24 = Regex::new(r"\b(\d{1,2}):(\d{2})\b").unwrap();
+    let re_24 = Regex::new(r"(?i)\b(\d{1,2}):(\d{2})\b").unwrap();
     if let Some(cap) = re_24.captures(text) {
         if let (Ok(hour), Ok(min)) = (cap[1].parse::<u32>(), cap[2].parse::<u32>()) {
             if hour < 24 && min < 60 {
@@ -100,11 +110,11 @@ fn extract_time_anywhere(text: &str) -> Option<chrono::NaiveTime> {
     }
 
     // 12-hour format: 9pm, 11:30am
-    let re_12 = Regex::new(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b").unwrap();
+    let re_12 = Regex::new(r"(?i)\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b").unwrap();
     if let Some(cap) = re_12.captures(text) {
         let hour: u32 = cap[1].parse().unwrap();
         let min: u32 = cap.get(2).map_or(0, |m| m.as_str().parse().unwrap());
-        let am_pm = &cap[3];
+        let am_pm = cap[3].to_lowercase();
         let hour_24 = if am_pm == "pm" && hour != 12 { hour + 12 } else if am_pm == "am" && hour == 12 { 0 } else { hour };
         if hour_24 < 24 && min < 60 {
             return chrono::NaiveTime::from_hms_opt(hour_24, min, 0);
@@ -114,22 +124,31 @@ fn extract_time_anywhere(text: &str) -> Option<chrono::NaiveTime> {
     None
 }
 
-fn parse_schedule(input: &str) -> Option<DateTime<Utc>> {
-    // Try chrono-english
-    if let Ok(dt_local) = chrono_english::parse_date_string(input, Local::now(), Dialect::Us) {
-        return Some(dt_local.with_timezone(&Utc));
-    }
+fn clean_text(text: &str) -> String {
+    // Remove " at " + time patterns (case insensitive)
+    let re_time = Regex::new(r"(?i)\s+at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b").unwrap();
+    let text = re_time.replace_all(text, "");
 
-    // Fallback to regex
+    // Remove standalone time patterns
+    let re_standalone = Regex::new(r"(?i)\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b").unwrap();
+    let text = re_standalone.replace_all(&text, "");
+
+    text.trim().to_string()
+}
+
+fn parse_schedule(input: &str) -> Option<DateTime<Utc>> {
     if let Some(time) = extract_time_anywhere(input) {
-        let now = Utc::now();
-        let datetime = now.date_naive().and_time(time);
-        let datetime = if datetime < now.naive_utc() {
+        let local_offset = Local::now().offset().clone();
+        let now_local = Utc::now().with_timezone(&local_offset);
+        let date = now_local.date_naive();
+        let datetime = date.and_time(time);
+        let datetime = if datetime < now_local.naive_local() {
             datetime + chrono::Duration::days(1)
         } else {
             datetime
         };
-        Some(datetime.and_utc())
+        let datetime_fixed = local_offset.from_local_datetime(&datetime).unwrap();
+        Some(datetime_fixed.with_timezone(&Utc))
     } else {
         None
     }
@@ -153,9 +172,10 @@ fn check_notifications(todos: &Vec<Todo>) {
 }
 
 fn format_due_time(due: DateTime<Utc>) -> String {
-    let now_local = Local::now();
+    let local_offset = Local::now().offset().clone();
+    let now_local = Utc::now().with_timezone(&local_offset);
     let today = now_local.date_naive();
-    let due_local = due.with_timezone(&Local);
+    let due_local = due.with_timezone(&local_offset);
     let due_date = due_local.date_naive();
     let due_time = due_local.time();
     let hour = due_time.hour();
@@ -316,16 +336,19 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                         } else {
                             // Handle adding/editing - require non-empty
                             if !app.input.is_empty() {
-                                let due_date = parse_due_date(&app.input);
-                                let text = app.input.clone();
+                                let new_due_date = parse_due_date(&app.input);
+                                let mut text = app.input.clone();
+                                if new_due_date.is_some() {
+                                    text = clean_text(&text);
+                                }
                                 if let Some(index) = app.editing_index {
                                     if let Some(todo) = app.todos.get_mut(index) {
                                         todo.text = text;
-                                        todo.due_date = due_date;
+                                        todo.due_date = new_due_date.or(todo.due_date);
                                     }
                                 } else {
                                     let mut todo = Todo::new(app.todos.len() as u32, text);
-                                    todo.due_date = due_date;
+                                    todo.due_date = new_due_date;
                                     app.todos.push(todo);
                                 }
                             }
