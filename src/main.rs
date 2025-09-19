@@ -26,6 +26,7 @@ pub struct Todo {
     pub completed: bool,
     pub suspended: bool,
     pub due_date: Option<DateTime<Utc>>,
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 impl Todo {
@@ -36,6 +37,7 @@ impl Todo {
             completed: false,
             suspended: false,
             due_date: None,
+            created_at: Some(Utc::now()),
         }
     }
 }
@@ -201,6 +203,32 @@ fn format_due_time(due: DateTime<Utc>) -> String {
         "Overdue".to_string()
     } else {
         due_date.format("%b %d").to_string()
+    }
+}
+
+fn format_age(created: DateTime<Utc>) -> String {
+    let now = Utc::now();
+    let duration = now - created;
+    if duration > chrono::Duration::hours(24) {
+        let days = duration.num_days() + if duration.num_hours() % 24 > 0 { 1 } else { 0 };
+        if days >= 7 {
+            let weeks = days / 7;
+            format!("added {} weeks ago", weeks)
+        } else {
+            format!("added {} days ago", days)
+        }
+    } else {
+        let hours = duration.num_hours();
+        if hours > 0 {
+            format!("added {} hours ago", hours)
+        } else {
+            let minutes = duration.num_minutes();
+            if minutes > 0 {
+                format!("added {} minutes ago", minutes)
+            } else {
+                "added just now".to_string()
+            }
+        }
     }
 }
 
@@ -393,11 +421,19 @@ fn ui(f: &mut Frame, app: &mut App) {
             } else {
                 "[ ]"
             };
-            let style = if todo.completed {
+            let mut style = if todo.completed {
                 Style::default().add_modifier(Modifier::CROSSED_OUT)
             } else {
                 Style::default()
             };
+            let is_overdue = if let Some(due) = todo.due_date {
+                due < Utc::now() && !todo.completed && !todo.suspended
+            } else {
+                false
+            };
+            if is_overdue {
+                style = style.fg(Color::Red);
+            }
             let main_content = format!("{} {}", prefix, todo.text);
 
             let mut spans = vec![Span::styled(main_content, style)];
@@ -405,7 +441,7 @@ fn ui(f: &mut Frame, app: &mut App) {
             if let Some(_due) = todo.due_date {
                 let icon = "⏰"; // Clock icon
                 spans.push(Span::raw(" "));
-                spans.push(Span::styled(icon, Style::default().fg(Color::Cyan)));
+                spans.push(Span::styled(icon, Style::default().fg(if is_overdue { Color::Red } else { Color::Cyan })));
             }
 
             let line = Line::from(spans);
@@ -444,21 +480,27 @@ fn ui(f: &mut Frame, app: &mut App) {
         f.set_cursor(chunks[1].x + 2 + app.input.len() as u16, chunks[1].y + 1);
     } else {
         // Show metadata for selected todo
-        let metadata = if let Some(todo) = app.todos.get(app.selected) {
-            if todo.completed {
-                "Status: Completed".to_string()
-            } else if todo.suspended {
-                "Status: Suspended".to_string()
-            } else if let Some(due) = todo.due_date {
-                format!("Scheduled for: {}", format_due_time(due))
+        let (metadata, color) = if let Some(todo) = app.todos.get(app.selected) {
+            let age = if let Some(created) = todo.created_at {
+                format!(" ({})", format_age(created))
             } else {
-                "No schedule set".to_string()
+                "".to_string()
+            };
+            if todo.completed {
+                (format!("Status: Completed{}", age), Color::Green)
+            } else if todo.suspended {
+                (format!("Status: Suspended{}", age), Color::Yellow)
+            } else if let Some(due) = todo.due_date {
+                let is_overdue = due < Utc::now();
+                (format!("Scheduled for: {}{}", format_due_time(due), age), if is_overdue { Color::Red } else { Color::Green })
+            } else {
+                (format!("No schedule set{}", age), Color::White)
             }
         } else {
-            "No todos".to_string()
+            ("No todos".to_string(), Color::White)
         };
         let metadata_paragraph = Paragraph::new(metadata)
-            .style(Style::default().fg(Color::Green))
+            .style(Style::default().fg(color))
             .block(Block::default().borders(Borders::ALL).title("Info").padding(Padding::new(1, 1, 0, 0)));
         f.render_widget(metadata_paragraph, chunks[1]);
     }
