@@ -509,7 +509,7 @@ fn ui(f: &mut Frame, app: &mut App) {
                 "[ ]"
             };
             let mut style = if todo.completed {
-                Style::default().add_modifier(Modifier::CROSSED_OUT)
+                Style::default().add_modifier(Modifier::CROSSED_OUT).fg(Color::DarkGray)
             } else {
                 Style::default()
             };
@@ -524,21 +524,25 @@ fn ui(f: &mut Frame, app: &mut App) {
                 } else {
                     style = style.fg(Color::Red);
                 }
+            } else if todo.completed && i == app.selected {
+                style = style.fg(Color::Black);
             }
             let main_content = format!("{} {}", prefix, todo.text);
 
             let mut spans = vec![Span::styled(main_content, style)];
 
             if let Some(_due) = todo.due_date {
-                let icon = if is_overdue { "⚠️" } else { "⏰" }; // Warning triangle for overdue, clock for scheduled
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(icon, Style::default().fg(if is_overdue { Color::Red } else { Color::Gray })));
+              let icon = if is_overdue { "⚠️" } else { "⏰" }; // Warning triangle for overdue, clock for scheduled
+              spans.push(Span::raw(" "));
+              spans.push(Span::styled(icon, Style::default()));
             }
 
             let line = Line::from(spans);
             let item_style = if i == app.selected {
                 if is_overdue {
                     Style::default().bg(Color::Red).fg(Color::Black)
+                } else if todo.completed {
+                    Style::default().bg(Color::DarkGray).fg(Color::White)
                 } else {
                     Style::default().add_modifier(Modifier::REVERSED)
                 }
