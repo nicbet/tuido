@@ -155,8 +155,6 @@ fn parse_schedule(input: &str) -> Option<DateTime<Utc>> {
     }
 }
 
-
-
 fn check_notifications(todos: &Vec<Todo>) {
     let now = Utc::now();
     for todo in todos {
@@ -532,9 +530,11 @@ fn ui(f: &mut Frame, app: &mut App) {
             let mut spans = vec![Span::styled(main_content, style)];
 
             if let Some(_due) = todo.due_date {
-              let icon = if is_overdue { "⚠️" } else { "⏰" }; // Warning triangle for overdue, clock for scheduled
-              spans.push(Span::raw(" "));
-              spans.push(Span::styled(icon, Style::default()));
+                if !todo.completed {
+                    let icon = if is_overdue { "❗" } else { "⏰" }; // Warning triangle for overdue, clock for scheduled
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(icon, Style::default()));
+                }
             }
 
             let line = Line::from(spans);
