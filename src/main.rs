@@ -344,6 +344,11 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                             app.save();
                         }
                     }
+                    KeyCode::Char('X') => {
+                        app.todos.clear();
+                        app.selected = 0;
+                        app.save();
+                    }
                     _ => {}
                 },
                 InputMode::Adding | InputMode::Editing | InputMode::Rescheduling => match key.code {
@@ -438,7 +443,7 @@ fn ui(f: &mut Frame, app: &mut App) {
             if let Some(_due) = todo.due_date {
                 let icon = "⏰"; // Clock icon
                 spans.push(Span::raw(" "));
-                spans.push(Span::styled(icon, Style::default().fg(if is_overdue { Color::Red } else { Color::Cyan })));
+                spans.push(Span::styled(icon, Style::default().fg(if is_overdue { Color::Red } else { Color::Gray })));
             }
 
             let line = Line::from(spans);
@@ -457,11 +462,48 @@ fn ui(f: &mut Frame, app: &mut App) {
 
     f.render_widget(list, chunks[0]);
 
-    let status_text = "↑↓/jk: navigate  Space: toggle  a: add  e: edit  r: reschedule  d: delete  s: suspend  q: quit";
-    let status = Paragraph::new(status_text)
-        .style(Style::default().fg(Color::White).bg(Color::Black))
+    // Split the bottom chunk into left and right for status and version
+    let bottom_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(1), Constraint::Length(10)].as_ref())
+        .split(chunks[2]);
+
+    // Create status line with styled keys
+    let status_spans = vec![
+        Span::raw(" "),  // Add left padding
+        Span::styled("↑↓", Style::default().fg(Color::Red)),
+        Span::raw("/"),
+        Span::styled("jk", Style::default().fg(Color::Red)),
+        Span::raw(": navigate  "),
+        Span::styled("Space", Style::default().fg(Color::Red)),
+        Span::raw(": toggle  "),
+        Span::styled("a", Style::default().fg(Color::Red)),
+        Span::raw(": add  "),
+        Span::styled("e", Style::default().fg(Color::Red)),
+        Span::raw(": edit  "),
+        Span::styled("r", Style::default().fg(Color::Red)),
+        Span::raw(": reschedule  "),
+        Span::styled("d", Style::default().fg(Color::Red)),
+        Span::raw(": delete  "),
+        Span::styled("s", Style::default().fg(Color::Red)),
+        Span::raw(": suspend  "),
+        Span::styled("X", Style::default().fg(Color::Red)),
+        Span::raw(": clear all  "),
+        Span::styled("q", Style::default().fg(Color::Red)),
+        Span::raw(": quit"),
+    ];
+    let status_line = Line::from(status_spans);
+    let status = Paragraph::new(status_line)
         .block(Block::default().borders(Borders::TOP));
-    f.render_widget(status, chunks[2]);
+    f.render_widget(status, bottom_chunks[0]);
+
+    // Version in bottom right
+    let version_text = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let version = Paragraph::new(version_text)
+        .style(Style::default().fg(Color::White))
+        .alignment(ratatui::layout::Alignment::Right)
+        .block(Block::default().borders(Borders::TOP));
+    f.render_widget(version, bottom_chunks[1]);
 
     if let InputMode::Adding | InputMode::Editing | InputMode::Rescheduling = app.input_mode {
         let title = match app.input_mode {
