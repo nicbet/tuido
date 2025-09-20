@@ -204,6 +204,32 @@ fn format_due_time(due: DateTime<Utc>) -> String {
     }
 }
 
+fn format_overdue_duration(due: DateTime<Utc>) -> String {
+    let now = Utc::now();
+    let duration = now - due;
+    if duration > chrono::Duration::hours(24) {
+        let days = duration.num_days() + if duration.num_hours() % 24 > 0 { 1 } else { 0 };
+        if days >= 7 {
+            let weeks = days / 7;
+            format!("{} weeks overdue", weeks)
+        } else {
+            format!("{} days overdue", days)
+        }
+    } else {
+        let hours = duration.num_hours();
+        if hours > 0 {
+            format!("{} hours overdue", hours)
+        } else {
+            let minutes = duration.num_minutes();
+            if minutes > 0 {
+                format!("{} minutes overdue", minutes)
+            } else {
+                "less than a minute overdue".to_string()
+            }
+        }
+    }
+}
+
 fn format_age(created: DateTime<Utc>) -> String {
     let now = Utc::now();
     let duration = now - created;
@@ -434,24 +460,33 @@ fn ui(f: &mut Frame, app: &mut App) {
                 false
             };
             if is_overdue {
-                style = style.fg(Color::Red);
+                if i == app.selected {
+                    style = style.fg(Color::Black);
+                } else {
+                    style = style.fg(Color::Red);
+                }
             }
             let main_content = format!("{} {}", prefix, todo.text);
 
             let mut spans = vec![Span::styled(main_content, style)];
 
             if let Some(_due) = todo.due_date {
-                let icon = "⏰"; // Clock icon
+                let icon = if is_overdue { "⚠️" } else { "⏰" }; // Warning triangle for overdue, clock for scheduled
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled(icon, Style::default().fg(if is_overdue { Color::Red } else { Color::Gray })));
             }
 
             let line = Line::from(spans);
-            ListItem::new(line).style(if i == app.selected {
-                Style::default().add_modifier(Modifier::REVERSED)
+            let item_style = if i == app.selected {
+                if is_overdue {
+                    Style::default().bg(Color::Red).fg(Color::Black)
+                } else {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                }
             } else {
                 Style::default()
-            })
+            };
+            ListItem::new(line).style(item_style)
         })
         .collect();
 
@@ -520,20 +555,30 @@ fn ui(f: &mut Frame, app: &mut App) {
     } else {
         // Show metadata for selected todo
         let (metadata, color) = if let Some(todo) = app.todos.get(app.selected) {
-            let age = if let Some(created) = todo.created_at {
-                format!(" ({})", format_age(created))
+            let is_overdue = if let Some(due) = todo.due_date {
+                due < Utc::now() && !todo.completed && !todo.suspended
+            } else {
+                false
+            };
+
+            let time_info = if let Some(created) = todo.created_at {
+                if is_overdue && todo.due_date.is_some() {
+                    format!(" ({})", format_overdue_duration(todo.due_date.unwrap()))
+                } else {
+                    format!(" ({})", format_age(created))
+                }
             } else {
                 "".to_string()
             };
+
             if todo.completed {
-                (format!("Status: Completed{}", age), Color::Green)
+                (format!("Status: Completed{}", time_info), Color::Green)
             } else if todo.suspended {
-                (format!("Status: Suspended{}", age), Color::Yellow)
+                (format!("Status: Suspended{}", time_info), Color::Yellow)
             } else if let Some(due) = todo.due_date {
-                let is_overdue = due < Utc::now();
-                (format!("Scheduled for: {}{}", format_due_time(due), age), if is_overdue { Color::Red } else { Color::Green })
+                (format!("Scheduled for: {}{}", format_due_time(due), time_info), if is_overdue { Color::Red } else { Color::Green })
             } else {
-                (format!("No schedule set{}", age), Color::White)
+                (format!("No schedule set{}", time_info), Color::White)
             }
         } else {
             ("No todos".to_string(), Color::White)
