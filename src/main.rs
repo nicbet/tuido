@@ -269,6 +269,7 @@ struct App {
     input_mode: InputMode,
     input: String,
     editing_index: Option<usize>,
+    cursor_position: usize,
 }
 
 impl App {
@@ -281,6 +282,7 @@ impl App {
             input_mode: InputMode::Normal,
             input: String::new(),
             editing_index: None,
+            cursor_position: 0,
         }
     }
 
@@ -341,18 +343,21 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                     KeyCode::Char('a') => {
                         app.input_mode = InputMode::Adding;
                         app.input.clear();
+                        app.cursor_position = 0;
                         app.editing_index = None;
                     }
                     KeyCode::Char('e') => {
                         if let Some(todo) = app.todos.get(app.selected) {
                             app.input_mode = InputMode::Editing;
                             app.input = todo.text.clone();
+                            app.cursor_position = app.input.len();
                             app.editing_index = Some(app.selected);
                         }
                     }
                     KeyCode::Char('r') => {
                         app.input_mode = InputMode::Rescheduling;
                         app.input.clear();
+                        app.cursor_position = 0;
                         app.editing_index = Some(app.selected);
                     }
                     KeyCode::Char('d') => {
@@ -414,16 +419,70 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                         app.save();
                     }
                     KeyCode::Char(c) => {
-                        app.input.push(c);
+                        if app.cursor_position <= app.input.len() {
+                            app.input.insert(app.cursor_position, c);
+                            app.cursor_position += 1;
+                        }
                     }
                     KeyCode::Backspace => {
-                        app.input.pop();
+                        if app.cursor_position > 0 {
+                            app.cursor_position -= 1;
+                            app.input.remove(app.cursor_position);
+                        }
+                    }
+                    KeyCode::Delete => {
+                        if app.cursor_position < app.input.len() {
+                            app.input.remove(app.cursor_position);
+                        }
+                    }
+                    KeyCode::Left => {
+                        if app.cursor_position > 0 {
+                            app.cursor_position -= 1;
+                        }
+                    }
+                    KeyCode::Right => {
+                        if app.cursor_position < app.input.len() {
+                            app.cursor_position += 1;
+                        }
+                    }
+                    KeyCode::Home => {
+                        app.cursor_position = 0;
+                    }
+                    KeyCode::End => {
+                        app.cursor_position = app.input.len();
                     }
                     KeyCode::Esc => {
                         app.input_mode = InputMode::Normal;
                         app.editing_index = None;
                     }
-                    _ => {}
+                    _ => {
+                        // Handle Ctrl+W (delete word) and Ctrl+U (delete line)
+                        if let KeyCode::Char(c) = key.code {
+                            if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                                match c {
+                                    'w' => {
+                                        // Delete word backwards
+                                        while app.cursor_position > 0 && app.input.chars().nth(app.cursor_position - 1).unwrap_or(' ').is_whitespace() {
+                                            app.cursor_position -= 1;
+                                            app.input.remove(app.cursor_position);
+                                        }
+                                        while app.cursor_position > 0 && !app.input.chars().nth(app.cursor_position - 1).unwrap_or(' ').is_whitespace() {
+                                            app.cursor_position -= 1;
+                                            app.input.remove(app.cursor_position);
+                                        }
+                                    }
+                                    'u' => {
+                                        // Delete from cursor to beginning of line
+                                        while app.cursor_position > 0 {
+                                            app.cursor_position -= 1;
+                                            app.input.remove(app.cursor_position);
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
                 },
             }
         }
@@ -551,7 +610,7 @@ fn ui(f: &mut Frame, app: &mut App) {
             .style(Style::default().fg(Color::Yellow))
             .block(Block::default().borders(Borders::ALL).title(title).padding(Padding::new(1, 1, 0, 0)));
         f.render_widget(input, chunks[1]);
-        f.set_cursor(chunks[1].x + 2 + app.input.len() as u16, chunks[1].y + 1);
+        f.set_cursor(chunks[1].x + 2 + app.cursor_position as u16, chunks[1].y + 1);
     } else {
         // Show metadata for selected todo
         let (metadata, color) = if let Some(todo) = app.todos.get(app.selected) {
