@@ -290,6 +290,7 @@ struct App {
     input: String,
     editing_index: Option<usize>,
     cursor_position: usize,
+    hide_completed: bool,
 }
 
 impl App {
@@ -303,6 +304,7 @@ impl App {
             input: String::new(),
             editing_index: None,
             cursor_position: 0,
+            hide_completed: false,
         }
     }
 
@@ -373,19 +375,77 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                         app.move_selected_up();
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        if app.selected < app.todos.len().saturating_sub(1) {
-                            app.selected += 1;
+                        let mut next = app.selected;
+                        loop {
+                            if next >= app.todos.len().saturating_sub(1) {
+                                break;
+                            }
+                            next += 1;
+                            if !app.hide_completed || !app.todos[next].completed {
+                                app.selected = next;
+                                break;
+                            }
                         }
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
-                        if app.selected > 0 {
-                            app.selected -= 1;
+                        let mut next = app.selected;
+                        loop {
+                            if next == 0 {
+                                break;
+                            }
+                            next -= 1;
+                            if !app.hide_completed || !app.todos[next].completed {
+                                app.selected = next;
+                                break;
+                            }
                         }
                     }
                     KeyCode::Char(' ') => {
-                        if let Some(todo) = app.todos.get_mut(app.selected) {
+                        let hide_completed = app.hide_completed;
+                        let selected = app.selected;
+                        let mut should_save = false;
+                        let mut was_completed = false;
+                        let mut became_completed = false;
+
+                        if let Some(todo) = app.todos.get_mut(selected) {
+                            was_completed = todo.completed;
                             todo.completed = !todo.completed;
+                            should_save = true;
+                            became_completed = todo.completed;
+                        }
+
+                        if should_save {
                             app.save();
+
+                            // If we just completed a todo and hide_completed is true, adjust selection
+                            if !was_completed && became_completed && hide_completed {
+                                // Find the next visible todo
+                                let mut next = selected;
+                                let mut found = false;
+                                for i in (selected + 1)..app.todos.len() {
+                                    if !app.todos[i].completed {
+                                        next = i;
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                if !found {
+                                    // No todo after, look before
+                                    for i in (0..selected).rev() {
+                                        if !app.todos[i].completed {
+                                            next = i;
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if found {
+                                    app.selected = next;
+                                } else {
+                                    // No visible todos, reset to 0
+                                    app.selected = 0;
+                                }
+                            }
                         }
                     }
                     KeyCode::Char('a') => {
@@ -430,6 +490,22 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                     }
                     KeyCode::Char('?') => {
                         app.input_mode = InputMode::Help;
+                    }
+                    KeyCode::Char('h') => {
+                        app.hide_completed = !app.hide_completed;
+                        // Adjust selected index if it's now out of bounds due to filtering
+                        let visible_todos = app.todos.iter().enumerate()
+                            .filter(|(_, todo)| !app.hide_completed || !todo.completed)
+                            .map(|(i, _)| i)
+                            .collect::<Vec<_>>();
+                        if !visible_todos.is_empty() {
+                            if !visible_todos.contains(&app.selected) {
+                                // Selected is hidden, move to the last visible todo
+                                app.selected = *visible_todos.last().unwrap();
+                            }
+                        } else {
+                            app.selected = 0;
+                        }
                     }
                     _ => {}
                 },
@@ -554,6 +630,7 @@ fn ui(f: &mut Frame, app: &mut App) {
         .todos
         .iter()
         .enumerate()
+        .filter(|(_, todo)| !app.hide_completed || !todo.completed)
         .map(|(i, todo)| {
             let prefix = if todo.completed {
                 "[x]"
@@ -610,8 +687,16 @@ fn ui(f: &mut Frame, app: &mut App) {
         .collect();
 
     let pending_count = app.todos.iter().filter(|t| !t.completed).count();
+    let completed_count = app.todos.len() - pending_count;
+
+    let title = if app.hide_completed && completed_count > 0 {
+        format!("TODOs ({}) / {} hidden", pending_count, completed_count)
+    } else {
+        format!("TODOs ({})", pending_count)
+    };
+
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(format!("TODOs ({})", pending_count)).padding(Padding::new(1, 1, 1, 1)))
+        .block(Block::default().borders(Borders::ALL).title(title).padding(Padding::new(1, 1, 1, 1)))
         .highlight_style(Style::default().add_modifier(Modifier::BOLD));
 
     f.render_widget(list, chunks[0]);
@@ -705,7 +790,7 @@ fn ui(f: &mut Frame, app: &mut App) {
     }
 
     if app.input_mode == InputMode::Help {
-        let help_text = "Keyboard Commands:\n\nNavigation:\n  ↑↓ / jk : Navigate items\n  Shift+↑↓ / Shift+jk : Reorder items\n\nActions:\n  Space : Toggle completed\n  a : Add new todo\n  e : Edit selected todo\n  r : Reschedule selected todo\n  d : Delete selected todo\n  s : Suspend selected todo\n  X : Clear all todos\n\nOther:\n  ? : Show this help\n  q : Quit application\n\nPress any key to close";
+        let help_text = "Keyboard Commands:\n\nNavigation:\n  ↑↓ / jk : Navigate items\n  Shift+↑↓ / Shift+jk : Reorder items\n\nActions:\n  Space : Toggle completed\n  a : Add new todo\n  e : Edit selected todo\n  r : Reschedule selected todo\n  d : Delete selected todo\n  s : Suspend selected todo\n  h : Toggle hide completed\n  X : Clear all todos\n\nOther:\n  ? : Show this help\n  q : Quit application\n\nPress any key to close";
         let help_paragraph = Paragraph::new(help_text)
             .style(Style::default().fg(Color::White))
             .block(Block::default().borders(Borders::ALL).title("Help").padding(Padding::new(1, 1, 1, 1)));
