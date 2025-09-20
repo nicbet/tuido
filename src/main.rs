@@ -7,7 +7,7 @@ use crossterm::{
 };
 use ratatui::{
     backend::{Backend, CrosstermBackend},
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Padding, Paragraph},
@@ -254,11 +254,33 @@ fn format_age(created: DateTime<Utc>) -> String {
     }
 }
 
+fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
+    let popup_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(r);
+
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(popup_layout[1])[1]
+}
+
+#[derive(PartialEq)]
 enum InputMode {
     Normal,
     Adding,
     Editing,
     Rescheduling,
+    Help,
 }
 
 struct App {
@@ -286,6 +308,22 @@ impl App {
 
     fn save(&self) {
         save_todos(&self.todos);
+    }
+
+    fn move_selected_up(&mut self) {
+        if self.selected > 0 {
+            self.todos.swap(self.selected, self.selected - 1);
+            self.selected -= 1;
+            self.save();
+        }
+    }
+
+    fn move_selected_down(&mut self) {
+        if self.selected < self.todos.len().saturating_sub(1) {
+            self.todos.swap(self.selected, self.selected + 1);
+            self.selected += 1;
+            self.save();
+        }
     }
 }
 
@@ -322,6 +360,18 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
             match app.input_mode {
                 InputMode::Normal => match key.code {
                     KeyCode::Char('q') => return Ok(()),
+                    KeyCode::Down if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) => {
+                        app.move_selected_down();
+                    }
+                    KeyCode::Up if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) => {
+                        app.move_selected_up();
+                    }
+                    KeyCode::Char('j') if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) => {
+                        app.move_selected_down();
+                    }
+                    KeyCode::Char('k') if key.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) => {
+                        app.move_selected_up();
+                    }
                     KeyCode::Down | KeyCode::Char('j') => {
                         if app.selected < app.todos.len().saturating_sub(1) {
                             app.selected += 1;
@@ -377,6 +427,9 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                         app.todos.clear();
                         app.selected = 0;
                         app.save();
+                    }
+                    KeyCode::Char('?') => {
+                        app.input_mode = InputMode::Help;
                     }
                     _ => {}
                 },
@@ -482,6 +535,9 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<
                         }
                     }
                 },
+                InputMode::Help => {
+                    app.input_mode = InputMode::Normal;
+                },
             }
         }
     }
@@ -579,16 +635,12 @@ fn ui(f: &mut Frame, app: &mut App) {
         Span::raw(": add  "),
         Span::styled("e", Style::default().fg(Color::Red)),
         Span::raw(": edit  "),
-        Span::styled("r", Style::default().fg(Color::Red)),
-        Span::raw(": reschedule  "),
         Span::styled("d", Style::default().fg(Color::Red)),
         Span::raw(": delete  "),
-        Span::styled("s", Style::default().fg(Color::Red)),
-        Span::raw(": suspend  "),
-        Span::styled("X", Style::default().fg(Color::Red)),
-        Span::raw(": clear all  "),
+        Span::styled("?", Style::default().fg(Color::Red)),
+        Span::raw(": help  "),
         Span::styled("q", Style::default().fg(Color::Red)),
-        Span::raw(": quit"),
+        Span::raw(": quit  "),
     ];
     let status_line = Line::from(status_spans);
     let status = Paragraph::new(status_line)
@@ -650,5 +702,15 @@ fn ui(f: &mut Frame, app: &mut App) {
             .style(Style::default().fg(color))
             .block(Block::default().borders(Borders::ALL).title("Info").padding(Padding::new(1, 1, 0, 0)));
         f.render_widget(metadata_paragraph, chunks[1]);
+    }
+
+    if app.input_mode == InputMode::Help {
+        let help_text = "Keyboard Commands:\n\nNavigation:\n  ↑↓ / jk : Navigate items\n  Shift+↑↓ / Shift+jk : Reorder items\n\nActions:\n  Space : Toggle completed\n  a : Add new todo\n  e : Edit selected todo\n  r : Reschedule selected todo\n  d : Delete selected todo\n  s : Suspend selected todo\n  X : Clear all todos\n\nOther:\n  ? : Show this help\n  q : Quit application\n\nPress any key to close";
+        let help_paragraph = Paragraph::new(help_text)
+            .style(Style::default().fg(Color::White))
+            .block(Block::default().borders(Borders::ALL).title("Help").padding(Padding::new(1, 1, 1, 1)));
+
+        let area = centered_rect(60, 80, f.size());
+        f.render_widget(help_paragraph, area);
     }
 }
