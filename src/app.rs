@@ -47,6 +47,32 @@ enum HistoryStep {
     Redo,
 }
 
+/// Which kinds of todos are hidden from the list. Every visibility decision
+/// goes through `shows`, so a new filter is one field plus one rule there.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct ViewFilter {
+    pub hide_completed: bool,
+    pub hide_suspended: bool,
+}
+
+impl ViewFilter {
+    /// Whether `todo` is listed. A todo that is both completed and suspended
+    /// counts as completed, matching how it is displayed.
+    pub fn shows(&self, todo: &Todo) -> bool {
+        if todo.completed {
+            !self.hide_completed
+        } else if todo.suspended {
+            !self.hide_suspended
+        } else {
+            true
+        }
+    }
+
+    pub fn hidden_count(&self, todos: &[Todo]) -> usize {
+        todos.iter().filter(|todo| !self.shows(todo)).count()
+    }
+}
+
 /// The todo list as it was before a change, so it can be restored.
 struct UndoEntry {
     todos: Vec<Todo>,
@@ -66,7 +92,7 @@ pub struct App {
     pub input_mode: InputMode,
     pub input: TextInput,
     editing_index: Option<usize>,
-    pub hide_completed: bool,
+    pub view: ViewFilter,
     pub message: Option<Message>,
     undo_stack: VecDeque<UndoEntry>,
     redo_stack: VecDeque<UndoEntry>,
@@ -99,7 +125,7 @@ impl App {
             input_mode: InputMode::Normal,
             input: TextInput::default(),
             editing_index: None,
-            hide_completed: false,
+            view: ViewFilter::default(),
             message: None,
             undo_stack: VecDeque::new(),
             redo_stack: VecDeque::new(),
@@ -138,9 +164,7 @@ impl App {
     }
 
     fn is_visible(&self, index: usize) -> bool {
-        self.todos
-            .get(index)
-            .is_some_and(|t| !self.hide_completed || !t.completed)
+        self.todos.get(index).is_some_and(|todo| self.view.shows(todo))
     }
 
     pub fn visible_indices(&self) -> Vec<usize> {
@@ -306,10 +330,16 @@ impl App {
             return;
         }
         let verb = if todo.suspended { "Resumed" } else { "Suspended" };
-        self.checkpoint(format!("{} {}", verb, quoted(&todo.text)), None);
+        let label = format!("{} {}", verb, quoted(&todo.text));
+        self.checkpoint(label.clone(), None);
         let todo = &mut self.todos[index];
         todo.suspended = !todo.suspended;
+        // The todo vanishes if suspended todos are hidden: point at undo.
+        if !self.is_visible(index) {
+            self.info(format!("{} (u to undo)", label));
+        }
         self.save();
+        self.fix_selection();
     }
 
     fn delete_selected(&mut self) {
@@ -334,8 +364,11 @@ impl App {
         self.save();
     }
 
-    fn toggle_hide_completed(&mut self) {
-        self.hide_completed = !self.hide_completed;
+    /// Flips one view filter, keeping the selection on a visible todo.
+    /// View state only: not saved and not undoable.
+    fn toggle_view(&mut self, flag: fn(&mut ViewFilter) -> &mut bool) {
+        let flag = flag(&mut self.view);
+        *flag = !*flag;
         self.fix_selection();
     }
 
@@ -506,7 +539,8 @@ impl App {
                 }
             }
             KeyCode::Char('?') => self.input_mode = InputMode::Help,
-            KeyCode::Char('h') => self.toggle_hide_completed(),
+            KeyCode::Char('h') => self.toggle_view(|view| &mut view.hide_completed),
+            KeyCode::Char('H') => self.toggle_view(|view| &mut view.hide_suspended),
             _ => {}
         }
         true
@@ -599,7 +633,7 @@ mod tests {
     fn hidden_completed_items_are_skipped() {
         let mut app = app_with(&["a", "b", "c"]);
         app.todos[1].completed = true;
-        app.hide_completed = true;
+        app.view.hide_completed = true;
         app.select_next();
         assert_eq!(app.selected, 2);
         app.select_previous();
@@ -610,7 +644,7 @@ mod tests {
     fn actions_ignore_hidden_selection() {
         let mut app = app_with(&["a"]);
         app.todos[0].completed = true;
-        app.toggle_hide_completed();
+        press(&mut app, KeyCode::Char('h'));
         assert_eq!(app.selected_index(), None);
         press(&mut app, KeyCode::Char('e'));
         assert!(app.input_mode == InputMode::Normal);
@@ -622,7 +656,7 @@ mod tests {
     fn reorder_skips_hidden_items() {
         let mut app = app_with(&["a", "b", "c"]);
         app.todos[1].completed = true;
-        app.hide_completed = true;
+        app.view.hide_completed = true;
         app.move_selected_down();
         assert_eq!(app.selected, 2);
         assert_eq!(app.todos[2].text, "a");
@@ -778,6 +812,8 @@ mod tests {
                 press(app, KeyCode::Char('k'));
                 press(app, KeyCode::Char('h'));
                 press(app, KeyCode::Char('h'));
+                press(app, KeyCode::Char('H'));
+                press(app, KeyCode::Char('H'));
             }),
             ("empty add", &|app| {
                 press(app, KeyCode::Char('a'));
@@ -940,7 +976,7 @@ mod tests {
     #[test]
     fn completing_while_hidden_hints_and_undo_selects_it_again() {
         let mut app = app_with(&["a", "b", "c"]);
-        app.hide_completed = true;
+        app.view.hide_completed = true;
         app.selected = 1;
         press(&mut app, KeyCode::Char(' '));
         assert_eq!(message(&app), ("Completed \"b\" (u to undo)", MessageKind::Info));
@@ -1050,6 +1086,86 @@ mod tests {
         assert_eq!(app.input_preview(Local::now()), None);
         press(&mut app, KeyCode::Enter);
         assert!(app.input_mode == InputMode::Adding, "Enter should have been rejected");
+    }
+
+    #[test]
+    fn view_filter_follows_display_precedence() {
+        let todo = |completed, suspended| {
+            let mut todo = Todo::new(0, "x".to_string());
+            todo.completed = completed;
+            todo.suspended = suspended;
+            todo
+        };
+        let filters = [(false, false), (true, false), (false, true), (true, true)].map(|(c, s)| ViewFilter {
+            hide_completed: c,
+            hide_suspended: s,
+        });
+        // (completed, suspended) -> shown with [no filter, h, H, h+H]
+        let cases = [
+            ((false, false), [true, true, true, true]),
+            ((true, false), [true, false, true, false]),
+            ((false, true), [true, true, false, false]),
+            ((true, true), [true, false, true, false]), // counts as completed
+        ];
+        for ((completed, suspended), expected) in cases {
+            let shown = filters.map(|filter| filter.shows(&todo(completed, suspended)));
+            assert_eq!(shown, expected, "completed={} suspended={}", completed, suspended);
+        }
+    }
+
+    #[test]
+    fn hidden_suspended_todos_are_skipped() {
+        let mut app = app_with(&["a", "b", "c"]);
+        app.todos[1].suspended = true;
+        press(&mut app, KeyCode::Char('H'));
+        press(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.selected, 2);
+        press(&mut app, KeyCode::Char('k'));
+        assert_eq!(app.selected, 0);
+        press(&mut app, KeyCode::Char('J'));
+        let texts: Vec<_> = app.todos.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(texts, ["c", "b", "a"]);
+    }
+
+    #[test]
+    fn suspending_while_hidden_hints_and_undo_brings_it_back() {
+        let mut app = app_with(&["a", "b", "c"]);
+        press(&mut app, KeyCode::Char('H'));
+        app.selected = 1;
+        press(&mut app, KeyCode::Char('s'));
+        assert_eq!(message(&app), ("Suspended \"b\" (u to undo)", MessageKind::Info));
+        assert_eq!(app.selected, 2, "selection moved to a visible todo");
+        press(&mut app, KeyCode::Char('u'));
+        assert!(!app.todos[1].suspended);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn filter_keys_are_view_state_only() {
+        let mut app = app_with(&["a"]);
+        app.todos[0].suspended = true;
+        press(&mut app, KeyCode::Char('H'));
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(
+            app.view,
+            ViewFilter {
+                hide_completed: true,
+                hide_suspended: true
+            }
+        );
+        assert!(app.undo_stack.is_empty());
+        press(&mut app, KeyCode::Char('H'));
+        press(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.view, ViewFilter::default());
+    }
+
+    #[test]
+    fn shift_h_is_typed_in_input_modes() {
+        let mut app = app_with(&[]);
+        press(&mut app, KeyCode::Char('a'));
+        press(&mut app, KeyCode::Char('H'));
+        assert_eq!(app.input.value(), "H");
+        assert_eq!(app.view, ViewFilter::default());
     }
 
     #[test]

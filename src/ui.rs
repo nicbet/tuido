@@ -10,7 +10,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap},
 };
 
-const HELP_TEXT: &str = "Keyboard Commands:\n\nNavigation:\n  ↑↓ / jk : Navigate items\n  Shift+↑↓ / JK : Reorder items\n\nActions:\n  Space : Toggle completed\n  a : Add new todo\n  e : Edit selected todo\n  r : Reschedule selected todo\n  d : Delete selected todo\n  s : Suspend selected todo\n  h : Toggle hide completed\n  X : Clear all todos\n  u : Undo last change\n  Ctrl+R : Redo\n\nOther:\n  ? : Show this help\n  q : Quit application\n\nPress any key to close";
+const HELP_TEXT: &str = "Keyboard Commands:\n\nNavigation:\n  ↑↓ / jk : Navigate items\n  Shift+↑↓ / JK : Reorder items\n\nActions:\n  Space : Toggle completed\n  a : Add new todo\n  e : Edit selected todo\n  r : Reschedule selected todo\n  d : Delete selected todo\n  s : Suspend selected todo\n  h / H : Toggle hide completed / suspended\n  X : Clear all todos\n  u : Undo last change\n  Ctrl+R : Redo\n\nOther:\n  ? : Show this help\n  q : Quit application\n\nPress any key to close";
 
 pub fn ui(f: &mut Frame, app: &App) {
     let size = f.area();
@@ -134,11 +134,13 @@ fn list_title(app: &App) -> String {
     let actionable = app.todos.len() - completed - suspended;
 
     let mut title = format!("TODOs ({})", actionable);
-    if suspended > 0 {
+    // Hidden suspended todos are counted in the hidden total instead.
+    if suspended > 0 && !app.view.hide_suspended {
         title.push_str(&format!(" · {} suspended", suspended));
     }
-    if app.hide_completed && completed > 0 {
-        title.push_str(&format!(" / {} hidden", completed));
+    let hidden = app.view.hidden_count(&app.todos);
+    if hidden > 0 {
+        title.push_str(&format!(" / {} hidden", hidden));
     }
     title
 }
@@ -225,6 +227,12 @@ fn render_info(f: &mut Frame, app: &App, area: Rect) {
             },
         };
         (text, state.info_color())
+    } else if !app.todos.is_empty() && app.view.hidden_count(&app.todos) == app.todos.len() {
+        let hidden = match app.todos.len() {
+            1 => "The only todo is hidden".to_string(),
+            n => format!("All {} todos hidden", n),
+        };
+        (format!("{} · h/H to show", hidden), Color::White)
     } else {
         ("No todos".to_string(), Color::White)
     };
@@ -364,7 +372,7 @@ mod tests {
         assert!(screen.contains("[x] done"));
         assert!(screen.contains("TODOs (1)"));
 
-        app.hide_completed = true;
+        app.view.hide_completed = true;
         let screen = render(&app);
         assert!(!screen.contains("done"));
         assert!(screen.contains("1 hidden"));
@@ -484,7 +492,7 @@ mod tests {
     fn title_counts_actionable_and_suspended() {
         let mut app = app_with_states();
         assert_eq!(list_title(&app), "TODOs (3) · 1 suspended");
-        app.hide_completed = true;
+        app.view.hide_completed = true;
         assert_eq!(list_title(&app), "TODOs (3) · 1 suspended / 1 hidden");
         // A completed+suspended todo counts as completed only.
         app.todos[4].completed = true;
@@ -537,6 +545,32 @@ mod tests {
             app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
         }
         assert!(render(&app).contains("Add Todo → Tomorrow 9:00am"));
+    }
+
+    #[test]
+    fn title_counts_hidden_suspended_in_the_hidden_total() {
+        let mut app = app_with_states(); // 3 actionable, 1 completed, 1 suspended
+        app.view.hide_suspended = true;
+        assert_eq!(list_title(&app), "TODOs (3) / 1 hidden");
+        app.view.hide_completed = true;
+        assert_eq!(list_title(&app), "TODOs (3) / 2 hidden");
+
+        // Completed and suspended counts once, as completed: shown under `H` alone.
+        app.todos[4].completed = true;
+        app.view.hide_completed = false;
+        assert_eq!(list_title(&app), "TODOs (3)");
+    }
+
+    #[test]
+    fn says_when_every_todo_is_hidden() {
+        let mut app = App::new(vec![Todo::new(0, "a".to_string()), Todo::new(1, "b".to_string())], None);
+        for todo in &mut app.todos {
+            todo.completed = true;
+        }
+        app.view.hide_completed = true;
+        assert!(render(&app).contains("All 2 todos hidden · h/H to show"));
+        app.todos.truncate(1);
+        assert!(render(&app).contains("The only todo is hidden · h/H to show"));
     }
 
     #[test]
