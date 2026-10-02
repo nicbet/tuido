@@ -8,6 +8,8 @@ mod text_input;
 mod ui;
 
 use app::App;
+use chrono::Utc;
+use notify_rust::Notification;
 use ratatui::{
     DefaultTerminal,
     crossterm::event::{self, Event, KeyEventKind},
@@ -74,21 +76,31 @@ fn todo_file(cli_file: Option<PathBuf>) -> Result<PathBuf, String> {
     }
 }
 
+/// Sends a desktop notification for todos that just became overdue. Failures
+/// (e.g. no notification daemon) are deliberately ignored: a missing
+/// notification must never crash the TUI.
+fn send_due_notifications(app: &mut App) {
+    let texts = app.take_due_notifications(Utc::now());
+    if let Some((summary, body)) = format::notification_message(&texts) {
+        let _ = Notification::new().summary(&summary).body(&body).show();
+    }
+}
+
 fn run_app(terminal: &mut DefaultTerminal, app: &mut App) -> io::Result<()> {
-    app.check_notifications();
     loop {
+        // Checked on every iteration (key event or tick) so continuous typing
+        // can't postpone a notification; it's a cheap scan with no I/O unless
+        // something just became due.
+        send_due_notifications(app);
         terminal.draw(|f| ui::ui(f, app))?;
 
-        if event::poll(TICK_RATE)? {
-            // Ignore key release/repeat events (reported on Windows).
-            if let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
-                && !app.handle_key(key.code, key.modifiers)
-            {
-                return Ok(());
-            }
-        } else {
-            app.check_notifications();
+        // Ignore key release/repeat events (reported on Windows).
+        if event::poll(TICK_RATE)?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+            && !app.handle_key(key.code, key.modifiers)
+        {
+            return Ok(());
         }
     }
 }

@@ -77,6 +77,29 @@ pub fn format_age(created: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
+/// How many todo texts a batched notification lists before "…and K more".
+const NOTIFICATION_LIST_LIMIT: usize = 3;
+
+/// Summary and body of the desktop notification for todos that just became
+/// overdue: the todo itself if there is one, otherwise a batched summary.
+pub fn notification_message(texts: &[String]) -> Option<(String, String)> {
+    match texts {
+        [] => None,
+        [text] => Some(("Todo Reminder".to_string(), format!("Reminder: {}", text))),
+        _ => {
+            let mut lines: Vec<String> = texts
+                .iter()
+                .take(NOTIFICATION_LIST_LIMIT)
+                .map(|text| format!("• {}", text))
+                .collect();
+            if texts.len() > NOTIFICATION_LIST_LIMIT {
+                lines.push(format!("…and {} more", texts.len() - NOTIFICATION_LIST_LIMIT));
+            }
+            Some((format!("{} todos overdue", texts.len()), lines.join("\n")))
+        }
+    }
+}
+
 /// Shows a path with the home directory abbreviated to `~`.
 pub fn display_path(path: &Path, home: Option<&Path>) -> String {
     match home.and_then(|home| path.strip_prefix(home).ok()) {
@@ -108,6 +131,27 @@ mod tests {
         let outside = std::env::temp_dir().join("other.json");
         assert_eq!(display_path(&outside, Some(&home)), outside.display().to_string());
         assert_eq!(display_path(&outside, None), outside.display().to_string());
+    }
+
+    #[test]
+    fn formats_notification_messages() {
+        let texts = |n: usize| (1..=n).map(|i| format!("t{}", i)).collect::<Vec<_>>();
+        assert_eq!(notification_message(&[]), None);
+        assert_eq!(
+            notification_message(&texts(1)).unwrap(),
+            ("Todo Reminder".to_string(), "Reminder: t1".to_string())
+        );
+        assert_eq!(
+            notification_message(&texts(3)).unwrap(),
+            ("3 todos overdue".to_string(), "• t1\n• t2\n• t3".to_string())
+        );
+        assert_eq!(
+            notification_message(&texts(5)).unwrap(),
+            (
+                "5 todos overdue".to_string(),
+                "• t1\n• t2\n• t3\n…and 2 more".to_string()
+            )
+        );
     }
 
     #[test]

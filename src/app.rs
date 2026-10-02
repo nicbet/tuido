@@ -2,10 +2,8 @@ use crate::model::Todo;
 use crate::schedule::{clean_text, parse_due_date};
 use crate::storage::save_todos;
 use crate::text_input::TextInput;
-use chrono::{Local, Utc};
-use notify_rust::Notification;
+use chrono::{DateTime, Local, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 #[derive(PartialEq)]
@@ -34,8 +32,6 @@ pub struct App {
     pub input: TextInput,
     editing_index: Option<usize>,
     pub hide_completed: bool,
-    /// Ids of todos we've already sent an overdue notification for.
-    notified: HashSet<u32>,
     /// Transient message (errors, hints) shown in the Info panel.
     pub message: Option<String>,
 }
@@ -50,7 +46,6 @@ impl App {
             input: TextInput::default(),
             editing_index: None,
             hide_completed: false,
-            notified: HashSet::new(),
             message: None,
         }
     }
@@ -201,7 +196,6 @@ impl App {
                     todo.due_date = None;
                 } else if let Some(due) = parse_due_date(&input, now) {
                     todo.due_date = Some(due);
-                    self.notified.remove(&todo.id);
                 } else {
                     self.message = Some(format!("Could not understand \"{}\" — schedule unchanged", input));
                     return;
@@ -223,7 +217,6 @@ impl App {
                     todo.text = text;
                     if new_due_date.is_some() {
                         todo.due_date = new_due_date;
-                        self.notified.remove(&todo.id);
                     }
                 }
             } else {
@@ -245,14 +238,21 @@ impl App {
         self.message = None;
     }
 
-    /// Sends a notification for every overdue todo that hasn't had one yet.
-    pub fn check_notifications(&mut self) {
-        let now = Utc::now();
-        for todo in &self.todos {
-            if todo.is_overdue(now) && self.notified.insert(todo.id) {
-                notify(todo);
+    /// Marks every todo that needs an overdue notification as notified at `now`,
+    /// saves, and returns their texts for the caller to send. Stamping happens
+    /// here, before sending, so a failed send is never retried every tick.
+    pub fn take_due_notifications(&mut self, now: DateTime<Utc>) -> Vec<String> {
+        let mut texts = Vec::new();
+        for todo in &mut self.todos {
+            if todo.needs_notification(now) {
+                todo.notified_at = Some(now);
+                texts.push(todo.text.clone());
             }
         }
+        if !texts.is_empty() {
+            self.save();
+        }
+        texts
     }
 
     /// Handles a key press. Returns `false` when the app should quit.
@@ -326,15 +326,6 @@ impl App {
             _ => {}
         }
     }
-}
-
-/// Sends a desktop notification. Failures (e.g. no notification daemon) are
-/// deliberately ignored: a missing notification must never crash the TUI.
-fn notify(todo: &Todo) {
-    let _ = Notification::new()
-        .summary("Todo Reminder")
-        .body(&format!("Reminder: {}", todo.text))
-        .show();
 }
 
 #[cfg(test)]
@@ -454,6 +445,56 @@ mod tests {
         app.todos[0].suspended = true;
         press(&mut app, KeyCode::Char('s'));
         assert!(app.todos[0].suspended && app.todos[0].completed);
+    }
+
+    fn overdue(app: &mut App, index: usize, hours_ago: i64) {
+        app.todos[index].due_date = Some(Utc::now() - chrono::Duration::hours(hours_ago));
+    }
+
+    #[test]
+    fn notifies_once_per_due_date() {
+        let mut app = app_with(&["a", "b", "parked", "done", "later"]);
+        overdue(&mut app, 0, 2);
+        overdue(&mut app, 1, 1);
+        overdue(&mut app, 2, 1);
+        app.todos[2].suspended = true;
+        overdue(&mut app, 3, 1);
+        app.todos[3].completed = true;
+        app.todos[4].due_date = Some(Utc::now() + chrono::Duration::hours(1));
+
+        assert_eq!(app.take_due_notifications(Utc::now()), ["a", "b"]);
+        assert!(app.take_due_notifications(Utc::now()).is_empty());
+
+        // Toggling completion does not re-arm.
+        app.todos[0].completed = true;
+        app.todos[0].completed = false;
+        assert!(app.take_due_notifications(Utc::now()).is_empty());
+
+        // An earlier, already-past due date does not re-arm.
+        overdue(&mut app, 1, 5);
+        assert!(app.take_due_notifications(Utc::now()).is_empty());
+
+        // A later due date re-arms once it passes.
+        let later = Utc::now() + chrono::Duration::hours(3);
+        app.todos[0].due_date = Some(Utc::now() + chrono::Duration::hours(2));
+        assert!(app.take_due_notifications(Utc::now()).is_empty());
+        assert_eq!(app.take_due_notifications(later), ["a", "later"]);
+    }
+
+    #[test]
+    fn notification_state_survives_restart() {
+        let dir = std::env::temp_dir().join(format!("tuido-test-{}-notify", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("todos.json");
+
+        let mut app = App::new(vec![Todo::new(0, "a".to_string())], Some(path.clone()));
+        overdue(&mut app, 0, 1);
+        assert_eq!(app.take_due_notifications(Utc::now()), ["a"]);
+
+        let todos = crate::storage::load_todos(&path).unwrap();
+        let mut restarted = App::new(todos, Some(path));
+        assert!(restarted.take_due_notifications(Utc::now()).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

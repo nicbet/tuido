@@ -191,6 +191,19 @@ mod tests {
     }
 
     #[test]
+    fn loads_files_written_before_notified_at_existed() {
+        let path = temp_file("legacy-format");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let legacy = r#"[{"id":0,"text":"old","completed":false,"suspended":false,"due_date":null,"created_at":null}]"#;
+        fs::write(&path, legacy).unwrap();
+
+        let todos = load_todos(&path).unwrap();
+        assert_eq!(todos[0].notified_at, None);
+        save_todos(&path, &todos).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("notified_at"));
+    }
+
+    #[test]
     fn tmp_file_appends_to_full_name() {
         assert_eq!(tmp_path_for(Path::new("/x/todo.txt")), Path::new("/x/todo.txt.tmp"));
         assert_eq!(tmp_path_for(Path::new("/x/todos.json")), Path::new("/x/todos.json.tmp"));
