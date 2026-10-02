@@ -1,1 +1,5 @@
 /target
+.xpo/issues.snapshot.json
+.xpo/git.lock
+.xpo/events.lock
+.xpo/worktrees/
