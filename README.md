@@ -15,12 +15,9 @@ A TUI todo app built with Rust, featuring a text-based user interface for managi
 - **Persistent Storage**: Todos are saved to `~/.config/tuido/todos.json`
 - **Keyboard-Driven**: Efficient navigation and editing with keyboard shortcuts
 
-## Prerequisites
-
-- Rust (latest stable version recommended)
-- Linux/macOS/Windows with terminal support
-
 ## Installation
+
+tuido runs on Linux, macOS, and Windows in any terminal.
 
 ### From a Release
 
@@ -47,6 +44,8 @@ The macOS binaries are not signed. If Gatekeeper blocks them, run `xattr -d com.
 
 ### From Source
 
+Requires Rust 1.88 or newer.
+
 1. Clone the repository:
 
    ```bash
@@ -68,6 +67,8 @@ The macOS binaries are not signed. If Gatekeeper blocks them, run `xattr -d com.
    ```
 
 ### Using Cargo
+
+Requires Rust 1.88 or newer.
 
 ```bash
 cargo install --git https://github.com/nicbet/tuido.git
@@ -195,7 +196,7 @@ When rescheduling (`r`), type only the date, for example `Friday 3pm` or `in 2 h
 
 ### Notifications
 
-The app shows a desktop notification when a task becomes overdue, both on startup and while it is running. Ensure your system supports notifications (Linux: notify-send, macOS: built-in, Windows: toast notifications).
+The app shows a desktop notification when a task becomes overdue, both on startup and while it is running. On Linux this needs a running notification daemon (most desktop environments ship one). macOS and Windows use their built-in notification centers.
 
 ## Configuration
 
@@ -235,7 +236,7 @@ Options:
 
 CI runs formatting, clippy, and tests on Linux for every push and pull request to `main`. Release binaries are built only when a version tag is pushed:
 
-1. Bump `version` in `Cargo.toml` and commit.
+1. Bump `version` in `Cargo.toml`, move the `Unreleased` entries in `CHANGELOG.md` under the new version, and commit.
 2. Tag and push: `git tag v0.3.1 && git push origin v0.3.1`
 
 The release workflow fails if the tag doesn't match the `Cargo.toml` version. Otherwise it builds all six targets and publishes a GitHub Release.
@@ -248,6 +249,8 @@ The release workflow fails if the tag doesn't match the `Cargo.toml` version. Ot
 4. Run tests and linting
 5. Submit a pull request
 
+This project tracks its work with the [Exponential](https://go-exponential.dev) issue tracker. Issues, specs, and implementation walkthroughs live in `.xpo/`.
+
 ## License
 
-MIT
+MIT, see [LICENSE](LICENSE).

@@ -3,6 +3,15 @@ name = "tuido"
 version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
+description = "A keyboard-driven terminal todo app with natural-language due dates and desktop notifications"
+authors = ["Nicolas Bettenburg <nicbet@gmail.com>"]
+license = "MIT"
+repository = "https://github.com/nicbet/tuido"
+homepage = "https://github.com/nicbet/tuido"
+readme = "README.md"
+keywords = ["todo", "tui", "terminal", "ratatui", "cli"]
+categories = ["command-line-utilities"]
+exclude = ["/demo", "/.xpo", "/.claude", "/.codex", "/.github", "/.mcp.json", "/AGENTS.md", "/CLAUDE.md"]
 
 [dependencies]
 ratatui = "0.30"
