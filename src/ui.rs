@@ -1,5 +1,5 @@
 use crate::app::{App, InputMode};
-use crate::format::{format_age, format_due_time, format_overdue_duration};
+use crate::format::{display_path, format_age, format_due_time, format_overdue_duration};
 use crate::model::Todo;
 use chrono::{DateTime, Local, Utc};
 use ratatui::{
@@ -7,7 +7,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap},
 };
 
 const HELP_TEXT: &str = "Keyboard Commands:\n\nNavigation:\n  ↑↓ / jk : Navigate items\n  Shift+↑↓ / JK : Reorder items\n\nActions:\n  Space : Toggle completed\n  a : Add new todo\n  e : Edit selected todo\n  r : Reschedule selected todo\n  d : Delete selected todo\n  s : Suspend selected todo\n  h : Toggle hide completed\n  X : Clear all todos\n\nOther:\n  ? : Show this help\n  q : Quit application\n\nPress any key to close";
@@ -29,7 +29,7 @@ pub fn ui(f: &mut Frame, app: &App) {
 
     match app.input_mode {
         InputMode::ConfirmClear => render_confirm_clear(f, app, size),
-        InputMode::Help => render_help(f, size),
+        InputMode::Help => render_help(f, app, size),
         _ => {}
     }
 }
@@ -286,9 +286,15 @@ fn render_confirm_clear(f: &mut Frame, app: &App, size: Rect) {
     f.render_widget(prompt, area);
 }
 
-fn render_help(f: &mut Frame, size: Rect) {
-    let help_paragraph = Paragraph::new(HELP_TEXT)
+fn render_help(f: &mut Frame, app: &App, size: Rect) {
+    // The file line goes first so it stays visible when the popup is clipped.
+    let file = match app.storage_path() {
+        Some(path) => display_path(path, dirs::home_dir().as_deref()),
+        None => "(not saved)".to_string(),
+    };
+    let help_paragraph = Paragraph::new(format!("File: {}\n\n{}", file, HELP_TEXT))
         .style(Style::default().fg(Color::White))
+        .wrap(Wrap { trim: false })
         .block(
             Block::default()
                 .borders(Borders::ALL)
@@ -324,6 +330,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+    use std::path::PathBuf;
 
     fn render(app: &App) -> String {
         let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
@@ -484,6 +491,13 @@ mod tests {
         app.selected = 4;
         let screen = render(&app);
         assert!(screen.contains("Status: Suspended · due "));
+    }
+
+    #[test]
+    fn help_popup_shows_active_file() {
+        let mut app = App::new(Vec::new(), Some(PathBuf::from("work-todos.json")));
+        app.input_mode = InputMode::Help;
+        assert!(render(&app).contains("work-todos.json"));
     }
 
     #[test]

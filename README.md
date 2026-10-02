@@ -143,7 +143,7 @@ cargo build
 
 ## Usage
 
-Run `tuido` in your terminal to start the application.
+Run `tuido` in your terminal to start the application. See [Configuration](#configuration) for command-line options.
 
 ### Keybindings
 
@@ -187,7 +187,37 @@ The app shows a desktop notification when a task becomes overdue, both on startu
 
 ## Configuration
 
-Todos are stored in `~/.config/tuido/todos.json`. The configuration directory is created automatically on first run.
+### Todo file location
+
+tuido picks the todo file from the first of these that applies:
+
+1. `-f/--file <PATH>`, for example `tuido -f ~/Dropbox/work-todos.json`
+2. The `TUIDO_FILE` environment variable
+3. `$XDG_CONFIG_HOME/tuido/todos.json`, if `XDG_CONFIG_HOME` is set to an absolute path
+4. `~/.config/tuido/todos.json` (the default)
+
+The directory for the default and XDG locations is created automatically on first run. For an explicit `--file` or `TUIDO_FILE`, the directory must already exist, so a typo doesn't quietly start a new, empty list.
+
+Press `?` in the app to see which file is in use.
+
+**Moving to the XDG location:** if `XDG_CONFIG_HOME` is set but `$XDG_CONFIG_HOME/tuido/todos.json` doesn't exist yet, tuido keeps using an existing `~/.config/tuido/todos.json`. To switch, move the file:
+
+```bash
+mkdir -p "$XDG_CONFIG_HOME/tuido" && mv ~/.config/tuido/todos.json "$XDG_CONFIG_HOME/tuido/"
+```
+
+**Synced folders and symlinks:** the todo file can be a symlink, for example into a Dropbox or Syncthing folder. Saves go to the file it points to, and the link is kept. tuido doesn't lock the file, so two instances, or two devices editing at once, overwrite each other's changes. The last save wins.
+
+### Command-line options
+
+```
+Usage: tuido [OPTIONS]
+
+Options:
+  -f, --file <PATH>  Use this todo file instead of the default
+  -h, --help         Print help
+  -V, --version      Print version
+```
 
 ## Releasing
 

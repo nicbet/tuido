@@ -6,7 +6,7 @@ use chrono::{Local, Utc};
 use notify_rust::Notification;
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(PartialEq)]
 pub enum InputMode {
@@ -53,6 +53,10 @@ impl App {
             notified: HashSet::new(),
             message: None,
         }
+    }
+
+    pub fn storage_path(&self) -> Option<&Path> {
+        self.storage_path.as_deref()
     }
 
     fn save(&mut self) {

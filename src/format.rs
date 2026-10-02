@@ -1,6 +1,7 @@
 //! Human-readable rendering of times and durations.
 
 use chrono::{DateTime, Datelike, Local, Timelike, Utc};
+use std::path::Path;
 
 fn format_clock(hour: u32, min: u32) -> String {
     let hour12 = match hour % 12 {
@@ -76,6 +77,14 @@ pub fn format_age(created: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
+/// Shows a path with the home directory abbreviated to `~`.
+pub fn display_path(path: &Path, home: Option<&Path>) -> String {
+    match home.and_then(|home| path.strip_prefix(home).ok()) {
+        Some(rest) => Path::new("~").join(rest).display().to_string(),
+        None => path.display().to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,6 +97,17 @@ mod tests {
         assert_eq!(humanize_duration(chrono::Duration::hours(25)).unwrap(), "1 day");
         assert_eq!(humanize_duration(chrono::Duration::days(13)).unwrap(), "1 week");
         assert_eq!(humanize_duration(chrono::Duration::days(14)).unwrap(), "2 weeks");
+    }
+
+    #[test]
+    fn abbreviates_home_in_paths() {
+        let home = std::env::temp_dir().join("home");
+        let inside = home.join(".config").join("tuido").join("todos.json");
+        let expected = Path::new("~").join(".config").join("tuido").join("todos.json");
+        assert_eq!(display_path(&inside, Some(&home)), expected.display().to_string());
+        let outside = std::env::temp_dir().join("other.json");
+        assert_eq!(display_path(&outside, Some(&home)), outside.display().to_string());
+        assert_eq!(display_path(&outside, None), outside.display().to_string());
     }
 
     #[test]
