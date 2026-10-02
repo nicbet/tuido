@@ -152,6 +152,10 @@ impl App {
     fn toggle_suspended(&mut self) {
         let Some(index) = self.selected_index() else { return };
         let todo = &mut self.todos[index];
+        // Completed wins; `s` is a no-op so un-completing restores the prior suspended state.
+        if todo.completed {
+            return;
+        }
         todo.suspended = !todo.suspended;
         self.save();
     }
@@ -430,6 +434,22 @@ mod tests {
         press(&mut app, KeyCode::Char('X'));
         press(&mut app, KeyCode::Char('y'));
         assert!(app.todos.is_empty());
+    }
+
+    #[test]
+    fn suspend_is_noop_on_completed_todo() {
+        let mut app = app_with(&["a"]);
+        press(&mut app, KeyCode::Char('s'));
+        assert!(app.todos[0].suspended);
+        press(&mut app, KeyCode::Char('s'));
+        app.todos[0].completed = true;
+        press(&mut app, KeyCode::Char('s'));
+        assert!(!app.todos[0].suspended);
+
+        // A completed todo that was already suspended keeps both flags.
+        app.todos[0].suspended = true;
+        press(&mut app, KeyCode::Char('s'));
+        assert!(app.todos[0].suspended && app.todos[0].completed);
     }
 
     #[test]

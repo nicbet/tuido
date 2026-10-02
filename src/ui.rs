@@ -34,46 +34,113 @@ pub fn ui(f: &mut Frame, app: &App) {
     }
 }
 
-fn todo_item(todo: &Todo, is_selected: bool, now: DateTime<Utc>) -> ListItem<'_> {
-    let prefix = if todo.completed {
-        "[x]"
+/// How a todo is presented. Precedence: Completed > Suspended > Overdue > Scheduled > Plain.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DisplayState {
+    Completed,
+    Suspended,
+    Overdue,
+    Scheduled,
+    Plain,
+}
+
+fn display_state(todo: &Todo, now: DateTime<Utc>) -> DisplayState {
+    if todo.completed {
+        DisplayState::Completed
     } else if todo.suspended {
-        "[~]"
+        DisplayState::Suspended
+    } else if todo.is_overdue(now) {
+        DisplayState::Overdue
+    } else if todo.due_date.is_some() {
+        DisplayState::Scheduled
     } else {
-        "[ ]"
-    };
-    let mut style = if todo.completed {
-        Style::default().add_modifier(Modifier::CROSSED_OUT).fg(Color::DarkGray)
-    } else {
-        Style::default()
-    };
-    let is_overdue = todo.is_overdue(now);
-    if is_overdue {
-        style = style.fg(if is_selected { Color::Black } else { Color::Red });
-    } else if todo.completed && is_selected {
-        style = style.fg(Color::Black);
+        DisplayState::Plain
     }
+}
 
-    let mut spans = vec![Span::styled(format!("{} {}", prefix, todo.text), style)];
-
-    if todo.due_date.is_some() && !todo.completed {
-        let icon = if is_overdue { "❗" } else { "⏰" }; // Exclamation for overdue, clock for scheduled
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(icon, Style::default()));
-    }
-
-    let item_style = if is_selected {
-        if is_overdue {
-            Style::default().bg(Color::Red).fg(Color::Black)
-        } else if todo.completed {
-            Style::default().bg(Color::DarkGray).fg(Color::White)
-        } else {
-            Style::default().add_modifier(Modifier::REVERSED)
+impl DisplayState {
+    fn prefix(self) -> &'static str {
+        match self {
+            DisplayState::Completed => "[x]",
+            DisplayState::Suspended => "[~]",
+            DisplayState::Overdue | DisplayState::Scheduled | DisplayState::Plain => "[ ]",
         }
-    } else {
-        Style::default()
-    };
-    ListItem::new(Line::from(spans)).style(item_style)
+    }
+
+    /// Style of the todo text. The span's foreground wins over the row style,
+    /// so selected states that change the row background must also set it here.
+    fn text_style(self, selected: bool) -> Style {
+        let style = match self {
+            DisplayState::Completed => Style::default().add_modifier(Modifier::CROSSED_OUT).fg(Color::DarkGray),
+            DisplayState::Suspended => Style::default().add_modifier(Modifier::ITALIC).fg(Color::Yellow),
+            DisplayState::Overdue => Style::default().fg(Color::Red),
+            DisplayState::Scheduled | DisplayState::Plain => Style::default(),
+        };
+        match self {
+            DisplayState::Completed | DisplayState::Suspended | DisplayState::Overdue if selected => {
+                style.fg(Color::Black)
+            }
+            _ => style,
+        }
+    }
+
+    /// Style of the whole row (background highlight when selected).
+    fn row_style(self, selected: bool) -> Style {
+        if !selected {
+            return Style::default();
+        }
+        match self {
+            DisplayState::Completed => Style::default().bg(Color::DarkGray).fg(Color::White),
+            DisplayState::Suspended => Style::default().bg(Color::Yellow).fg(Color::Black),
+            DisplayState::Overdue => Style::default().bg(Color::Red).fg(Color::Black),
+            DisplayState::Scheduled | DisplayState::Plain => Style::default().add_modifier(Modifier::REVERSED),
+        }
+    }
+
+    fn icon(self) -> Option<&'static str> {
+        match self {
+            DisplayState::Overdue => Some("❗"),
+            DisplayState::Scheduled => Some("⏰"),
+            DisplayState::Completed | DisplayState::Suspended | DisplayState::Plain => None,
+        }
+    }
+
+    fn info_color(self) -> Color {
+        match self {
+            DisplayState::Completed | DisplayState::Scheduled => Color::Green,
+            DisplayState::Suspended => Color::Yellow,
+            DisplayState::Overdue => Color::Red,
+            DisplayState::Plain => Color::White,
+        }
+    }
+}
+
+fn todo_item(todo: &Todo, is_selected: bool, now: DateTime<Utc>) -> ListItem<'_> {
+    let state = display_state(todo, now);
+    let mut spans = vec![Span::styled(
+        format!("{} {}", state.prefix(), todo.text),
+        state.text_style(is_selected),
+    )];
+    if let Some(icon) = state.icon() {
+        spans.push(Span::raw(" "));
+        spans.push(Span::raw(icon));
+    }
+    ListItem::new(Line::from(spans)).style(state.row_style(is_selected))
+}
+
+fn list_title(app: &App) -> String {
+    let completed = app.todos.iter().filter(|t| t.completed).count();
+    let suspended = app.todos.iter().filter(|t| !t.completed && t.suspended).count();
+    let actionable = app.todos.len() - completed - suspended;
+
+    let mut title = format!("TODOs ({})", actionable);
+    if suspended > 0 {
+        title.push_str(&format!(" · {} suspended", suspended));
+    }
+    if app.hide_completed && completed > 0 {
+        title.push_str(&format!(" / {} hidden", completed));
+    }
+    title
 }
 
 fn render_list(f: &mut Frame, app: &App, area: Rect) {
@@ -84,20 +151,11 @@ fn render_list(f: &mut Frame, app: &App, area: Rect) {
         .map(|&i| todo_item(&app.todos[i], i == app.selected, now))
         .collect();
 
-    let pending_count = app.todos.iter().filter(|t| !t.completed).count();
-    let completed_count = app.todos.len() - pending_count;
-
-    let title = if app.hide_completed && completed_count > 0 {
-        format!("TODOs ({}) / {} hidden", pending_count, completed_count)
-    } else {
-        format!("TODOs ({})", pending_count)
-    };
-
     let list = List::new(items)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(title)
+                .title(list_title(app))
                 .padding(Padding::new(1, 1, 1, 1)),
         )
         .highlight_style(Style::default().add_modifier(Modifier::BOLD));
@@ -141,26 +199,26 @@ fn render_info(f: &mut Frame, app: &App, area: Rect) {
     let (metadata, color) = if let Some(msg) = &app.message {
         (msg.clone(), Color::Red)
     } else if let Some(todo) = app.selected_todo() {
-        let is_overdue = todo.is_overdue(now);
-
+        let state = display_state(todo, now);
         let time_info = match (todo.due_date, todo.created_at) {
-            (Some(due), _) if is_overdue => format!(" ({})", format_overdue_duration(due, now)),
+            (Some(due), _) if state == DisplayState::Overdue => format!(" ({})", format_overdue_duration(due, now)),
             (_, Some(created)) => format!(" ({})", format_age(created, now)),
             _ => String::new(),
         };
+        let due = || todo.due_date.map(|due| format_due_time(due, Local::now()));
 
-        if todo.completed {
-            (format!("Status: Completed{}", time_info), Color::Green)
-        } else if todo.suspended {
-            (format!("Status: Suspended{}", time_info), Color::Yellow)
-        } else if let Some(due) = todo.due_date {
-            (
-                format!("Scheduled for: {}{}", format_due_time(due, Local::now()), time_info),
-                if is_overdue { Color::Red } else { Color::Green },
-            )
-        } else {
-            (format!("No schedule set{}", time_info), Color::White)
-        }
+        let text = match state {
+            DisplayState::Completed => format!("Status: Completed{}", time_info),
+            DisplayState::Suspended => match due() {
+                Some(due) => format!("Status: Suspended · due {}{}", due, time_info),
+                None => format!("Status: Suspended{}", time_info),
+            },
+            DisplayState::Overdue | DisplayState::Scheduled | DisplayState::Plain => match due() {
+                Some(due) => format!("Scheduled for: {}{}", due, time_info),
+                None => format!("No schedule set{}", time_info),
+            },
+        };
+        (text, state.info_color())
     } else {
         ("No todos".to_string(), Color::White)
     };
@@ -297,6 +355,135 @@ mod tests {
         let screen = render(&app);
         assert!(!screen.contains("done"));
         assert!(screen.contains("1 hidden"));
+    }
+
+    /// (fg, bg, modifiers) of the first cell of the list row that contains `text`.
+    fn row_style(app: &App, text: &str) -> (Option<Color>, Option<Color>, Modifier) {
+        let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+        terminal.draw(|f| ui(f, app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        for y in 0..buffer.area.height {
+            let row: String = (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect();
+            if let Some(col) = row.find(&format!("] {}", text)) {
+                // `col` is a byte offset of "] "; step back over "[x" to the '['.
+                let x = (row[..col].chars().count() as u16)
+                    .checked_sub(2)
+                    .expect("prefix '[' should be left of the match");
+                let style = buffer[(x, y)].style();
+                return (style.fg, style.bg, style.add_modifier);
+            }
+        }
+        panic!("row {:?} not rendered", text);
+    }
+
+    fn app_with_states() -> App {
+        let past = Utc::now() - chrono::Duration::hours(1);
+        let future = Utc::now() + chrono::Duration::hours(1);
+        let mut todos: Vec<Todo> = ["plain", "scheduled", "overdue", "done", "parked"]
+            .iter()
+            .enumerate()
+            .map(|(i, t)| Todo::new(i as u32, t.to_string()))
+            .collect();
+        todos[1].due_date = Some(future);
+        todos[2].due_date = Some(past);
+        todos[3].completed = true;
+        todos[4].suspended = true;
+        todos[4].due_date = Some(past);
+        App::new(todos, None)
+    }
+
+    #[test]
+    fn display_state_precedence() {
+        let now = Utc::now();
+        let past = Some(now - chrono::Duration::hours(1));
+        let future = Some(now + chrono::Duration::hours(1));
+        let state = |completed, suspended, due_date| {
+            let mut todo = Todo::new(0, "x".to_string());
+            todo.completed = completed;
+            todo.suspended = suspended;
+            todo.due_date = due_date;
+            display_state(&todo, now)
+        };
+        assert_eq!(state(true, true, past), DisplayState::Completed);
+        assert_eq!(state(true, false, past), DisplayState::Completed);
+        assert_eq!(state(false, true, past), DisplayState::Suspended);
+        assert_eq!(state(false, true, None), DisplayState::Suspended);
+        assert_eq!(state(false, false, past), DisplayState::Overdue);
+        assert_eq!(state(false, false, future), DisplayState::Scheduled);
+        assert_eq!(state(false, false, None), DisplayState::Plain);
+    }
+
+    #[test]
+    fn unselected_row_styles() {
+        let mut app = app_with_states();
+        app.selected = usize::MAX; // nothing selected
+        let style = |fg, modifier| (Some(fg), Some(Color::Reset), modifier);
+        assert_eq!(row_style(&app, "plain"), style(Color::Reset, Modifier::empty()));
+        assert_eq!(row_style(&app, "scheduled"), style(Color::Reset, Modifier::empty()));
+        assert_eq!(row_style(&app, "overdue"), style(Color::Red, Modifier::empty()));
+        assert_eq!(row_style(&app, "done"), style(Color::DarkGray, Modifier::CROSSED_OUT));
+        assert_eq!(row_style(&app, "parked"), style(Color::Yellow, Modifier::ITALIC));
+    }
+
+    #[test]
+    fn selected_row_styles() {
+        let mut app = app_with_states();
+        let mut selected = |i: usize, text: &str| {
+            app.selected = i;
+            row_style(&app, text)
+        };
+        let bold = Modifier::BOLD; // List highlight_style
+        let style = |fg, bg, modifier| (Some(fg), Some(bg), bold | modifier);
+        assert_eq!(
+            selected(0, "plain"),
+            style(Color::Reset, Color::Reset, Modifier::REVERSED)
+        );
+        assert_eq!(
+            selected(1, "scheduled"),
+            style(Color::Reset, Color::Reset, Modifier::REVERSED)
+        );
+        assert_eq!(
+            selected(2, "overdue"),
+            style(Color::Black, Color::Red, Modifier::empty())
+        );
+        assert_eq!(
+            selected(3, "done"),
+            style(Color::Black, Color::DarkGray, Modifier::CROSSED_OUT)
+        );
+        assert_eq!(
+            selected(4, "parked"),
+            style(Color::Black, Color::Yellow, Modifier::ITALIC)
+        );
+    }
+
+    #[test]
+    fn icons_by_state() {
+        let screen = render(&app_with_states());
+        let line = |text: &str| screen.lines().find(|l| l.contains(text)).unwrap().to_string();
+        assert!(line("scheduled").contains('⏰'));
+        assert!(line("overdue").contains('❗'));
+        assert!(!line("parked").contains('⏰') && !line("parked").contains('❗'));
+        assert!(line("parked").contains("[~] parked"));
+        assert!(!line("done").contains('⏰'));
+    }
+
+    #[test]
+    fn title_counts_actionable_and_suspended() {
+        let mut app = app_with_states();
+        assert_eq!(list_title(&app), "TODOs (3) · 1 suspended");
+        app.hide_completed = true;
+        assert_eq!(list_title(&app), "TODOs (3) · 1 suspended / 1 hidden");
+        // A completed+suspended todo counts as completed only.
+        app.todos[4].completed = true;
+        assert_eq!(list_title(&app), "TODOs (3) / 2 hidden");
+    }
+
+    #[test]
+    fn info_panel_shows_due_date_for_suspended() {
+        let mut app = app_with_states();
+        app.selected = 4;
+        let screen = render(&app);
+        assert!(screen.contains("Status: Suspended · due "));
     }
 
     #[test]
