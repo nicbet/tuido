@@ -4,6 +4,8 @@
 
 A TUI todo app built with Rust, featuring a text-based user interface for managing tasks, scheduling, and notifications.
 
+![tuido demo](demo/demo.gif)
+
 ## Features
 
 - **Task Management**: Add, edit, delete, and toggle completion of todos
@@ -123,7 +125,15 @@ cargo build
    cargo check
    ```
 
-5. Clean build artifacts:
+5. Re-record the README demo GIF (requires [VHS](https://github.com/charmbracelet/vhs)):
+
+   ```bash
+   make demo
+   ```
+
+   The script lives in `demo/demo.tape` and runs tuido with a throwaway `HOME`, so your own todos are never touched.
+
+6. Clean build artifacts:
 
    ```bash
    make clean
