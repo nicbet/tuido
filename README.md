@@ -1,5 +1,7 @@
 # Tuido
 
+[![CI](https://github.com/nicbet/tuido/actions/workflows/ci.yml/badge.svg)](https://github.com/nicbet/tuido/actions/workflows/ci.yml)
+
 A TUI todo app built with Rust, featuring a text-based user interface for managing tasks, scheduling, and notifications.
 
 ## Features
@@ -17,6 +19,29 @@ A TUI todo app built with Rust, featuring a text-based user interface for managi
 - Linux/macOS/Windows with terminal support
 
 ## Installation
+
+### From a Release
+
+Prebuilt binaries are published on the [Releases](https://github.com/nicbet/tuido/releases) page for:
+
+| Platform | Archive suffix |
+| --- | --- |
+| Linux x86_64 (static) | `x86_64-unknown-linux-musl.tar.gz` |
+| Linux arm64 (static) | `aarch64-unknown-linux-musl.tar.gz` |
+| macOS Intel | `x86_64-apple-darwin.tar.gz` |
+| macOS Apple Silicon | `aarch64-apple-darwin.tar.gz` |
+| Windows x86_64 | `x86_64-pc-windows-msvc.zip` |
+| Windows arm64 | `aarch64-pc-windows-msvc.zip` |
+
+Download the archive for your platform, verify it against its `.sha256` file, extract it, and put `tuido` on your `PATH`:
+
+```bash
+shasum -a 256 -c tuido-v0.3.0-aarch64-apple-darwin.tar.gz.sha256
+tar -xzf tuido-v0.3.0-aarch64-apple-darwin.tar.gz
+sudo cp tuido-v0.3.0-aarch64-apple-darwin/tuido /usr/local/bin/
+```
+
+The macOS binaries are not signed. If Gatekeeper blocks them, run `xattr -d com.apple.quarantine /usr/local/bin/tuido`.
 
 ### From Source
 
@@ -153,6 +178,15 @@ The app shows a desktop notification when a task becomes overdue, both on startu
 ## Configuration
 
 Todos are stored in `~/.config/tuido/todos.json`. The configuration directory is created automatically on first run.
+
+## Releasing
+
+CI runs formatting, clippy, and tests on Linux for every push and pull request to `main`. Release binaries are built only when a version tag is pushed:
+
+1. Bump `version` in `Cargo.toml` and commit.
+2. Tag and push: `git tag v0.3.1 && git push origin v0.3.1`
+
+The release workflow fails if the tag doesn't match the `Cargo.toml` version. Otherwise it builds all six targets and publishes a GitHub Release.
 
 ## Contributing
 

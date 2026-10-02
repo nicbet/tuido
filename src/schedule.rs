@@ -6,17 +6,13 @@ use std::sync::LazyLock;
 
 static RE_TOMORROW: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\btomorrow\b").unwrap());
 // 24-hour format: 21:35
-static RE_TIME_24: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b(\d{1,2}):(\d{2})\b").unwrap());
+static RE_TIME_24: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\b(\d{1,2}):(\d{2})\b").unwrap());
 // 12-hour format: 9pm, 11:30am
-static RE_TIME_12: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b").unwrap());
+static RE_TIME_12: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b").unwrap());
 // Scheduling phrases to strip from the todo text once a due date was parsed
 static RE_CLEAN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)(?:\s+(?:at|by))?\s*(?:\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\btomorrow\b)",
-    )
-    .unwrap()
+    Regex::new(r"(?i)(?:\s+(?:at|by))?\s*(?:\b\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|\b\d{1,2}:\d{2}\b|\btomorrow\b)")
+        .unwrap()
 });
 
 /// Converts a local wall-clock time to UTC, resolving DST ambiguities to the
@@ -25,7 +21,11 @@ fn local_to_utc(datetime: NaiveDateTime) -> Option<DateTime<Utc>> {
     Local
         .from_local_datetime(&datetime)
         .earliest()
-        .or_else(|| Local.from_local_datetime(&(datetime + chrono::Duration::hours(1))).earliest())
+        .or_else(|| {
+            Local
+                .from_local_datetime(&(datetime + chrono::Duration::hours(1)))
+                .earliest()
+        })
         .map(|dt| dt.with_timezone(&Utc))
 }
 
@@ -121,8 +121,14 @@ mod tests {
     #[test]
     fn past_time_rolls_to_next_day() {
         let now = local(2026, 3, 10, 18, 0);
-        assert_eq!(parse_due_date("3pm", now).unwrap(), local(2026, 3, 11, 15, 0).with_timezone(&Utc));
-        assert_eq!(parse_due_date("8pm", now).unwrap(), local(2026, 3, 10, 20, 0).with_timezone(&Utc));
+        assert_eq!(
+            parse_due_date("3pm", now).unwrap(),
+            local(2026, 3, 11, 15, 0).with_timezone(&Utc)
+        );
+        assert_eq!(
+            parse_due_date("8pm", now).unwrap(),
+            local(2026, 3, 10, 20, 0).with_timezone(&Utc)
+        );
     }
 
     #[test]

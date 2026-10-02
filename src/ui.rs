@@ -94,7 +94,12 @@ fn render_list(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title).padding(Padding::new(1, 1, 1, 1)))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .padding(Padding::new(1, 1, 1, 1)),
+        )
         .highlight_style(Style::default().add_modifier(Modifier::BOLD));
 
     // A ListState keeps the selected item scrolled into view on long lists.
@@ -120,7 +125,12 @@ fn render_input(f: &mut Frame, app: &App, area: Rect) {
     let input = Paragraph::new(app.input.value())
         .style(Style::default().fg(Color::Yellow))
         .scroll((0, scroll))
-        .block(Block::default().borders(Borders::ALL).title(title).padding(Padding::new(1, 1, 0, 0)));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .padding(Padding::new(1, 1, 0, 0)),
+        );
     f.render_widget(input, area);
     f.set_cursor_position((area.x + 2 + cursor_col - scroll, area.y + 1));
 }
@@ -154,9 +164,12 @@ fn render_info(f: &mut Frame, app: &App, area: Rect) {
     } else {
         ("No todos".to_string(), Color::White)
     };
-    let metadata_paragraph = Paragraph::new(metadata)
-        .style(Style::default().fg(color))
-        .block(Block::default().borders(Borders::ALL).title("Info").padding(Padding::new(1, 1, 0, 0)));
+    let metadata_paragraph = Paragraph::new(metadata).style(Style::default().fg(color)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Info")
+            .padding(Padding::new(1, 1, 0, 0)),
+    );
     f.render_widget(metadata_paragraph, area);
 }
 
@@ -204,7 +217,12 @@ fn render_confirm_clear(f: &mut Frame, app: &App, size: Rect) {
     ))
     .style(Style::default().fg(Color::Red))
     .alignment(Alignment::Center)
-    .block(Block::default().borders(Borders::ALL).title("Clear All").padding(Padding::new(1, 1, 1, 1)));
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Clear All")
+            .padding(Padding::new(1, 1, 1, 1)),
+    );
     let area = centered_rect(50, 30, size);
     f.render_widget(Clear, area);
     f.render_widget(prompt, area);
@@ -213,7 +231,12 @@ fn render_confirm_clear(f: &mut Frame, app: &App, size: Rect) {
 fn render_help(f: &mut Frame, size: Rect) {
     let help_paragraph = Paragraph::new(HELP_TEXT)
         .style(Style::default().fg(Color::White))
-        .block(Block::default().borders(Borders::ALL).title("Help").padding(Padding::new(1, 1, 1, 1)));
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Help")
+                .padding(Padding::new(1, 1, 1, 1)),
+        );
     let area = centered_rect(60, 80, size);
     f.render_widget(Clear, area);
     f.render_widget(help_paragraph, area);
@@ -249,7 +272,11 @@ mod tests {
         terminal.draw(|f| ui(f, app)).unwrap();
         let buffer = terminal.backend().buffer();
         (0..buffer.area.height)
-            .map(|y| (0..buffer.area.width).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
             .join("\n")
     }

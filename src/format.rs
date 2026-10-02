@@ -100,7 +100,12 @@ mod tests {
     #[test]
     fn formats_due_times() {
         let now = Local.with_ymd_and_hms(2026, 3, 10, 12, 0, 0).unwrap();
-        let at = |m, d, h, min| Local.with_ymd_and_hms(2026, m, d, h, min, 0).unwrap().with_timezone(&Utc);
+        let at = |m, d, h, min| {
+            Local
+                .with_ymd_and_hms(2026, m, d, h, min, 0)
+                .unwrap()
+                .with_timezone(&Utc)
+        };
         assert_eq!(format_due_time(at(3, 10, 15, 0), now), "Today 3:00pm");
         assert_eq!(format_due_time(at(3, 11, 0, 0), now), "Tomorrow");
         assert_eq!(format_due_time(at(3, 1, 9, 0), now), "Overdue");

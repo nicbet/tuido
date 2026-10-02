@@ -201,7 +201,11 @@ impl App {
             }
         } else if !input.is_empty() {
             let new_due_date = parse_due_date(&input, now);
-            let text = if new_due_date.is_some() { clean_text(&input) } else { input };
+            let text = if new_due_date.is_some() {
+                clean_text(&input)
+            } else {
+                input
+            };
             if text.is_empty() {
                 self.message = Some("Todo text cannot be empty".to_string());
                 return;
@@ -247,9 +251,7 @@ impl App {
     pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
         match self.input_mode {
             InputMode::Normal => return self.handle_normal_key(code, modifiers),
-            InputMode::Adding | InputMode::Editing | InputMode::Rescheduling => {
-                self.handle_text_key(code, modifiers)
-            }
+            InputMode::Adding | InputMode::Editing | InputMode::Rescheduling => self.handle_text_key(code, modifiers),
             InputMode::ConfirmClear => {
                 if code == KeyCode::Char('y') {
                     self.clear_all();

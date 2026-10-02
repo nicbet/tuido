@@ -21,10 +21,9 @@ pub fn load_todos(file_path: &Path) -> Result<Vec<Todo>, String> {
     if !file_path.exists() {
         return Ok(Vec::new());
     }
-    let data = fs::read_to_string(file_path)
-        .map_err(|e| format!("failed to read {}: {}", file_path.display(), e))?;
-    let mut todos: Vec<Todo> = serde_json::from_str(&data)
-        .map_err(|e| format!("failed to parse {}: {}", file_path.display(), e))?;
+    let data = fs::read_to_string(file_path).map_err(|e| format!("failed to read {}: {}", file_path.display(), e))?;
+    let mut todos: Vec<Todo> =
+        serde_json::from_str(&data).map_err(|e| format!("failed to parse {}: {}", file_path.display(), e))?;
     dedupe_ids(&mut todos);
     Ok(todos)
 }
