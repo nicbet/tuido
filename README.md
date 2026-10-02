@@ -160,6 +160,8 @@ Run `tuido` in your terminal to start the application. See [Configuration](#conf
   - `d`: Delete selected task
   - `h`: Hide/show completed tasks
   - `X`: Clear all tasks (asks for confirmation)
+  - `u`: Undo the last change (add, edit, reschedule, complete, suspend, delete, reorder, clear all)
+  - `Ctrl+R`: Redo
 
 - **While typing**:
   - `←/→`, `Home/End`: Move the cursor

@@ -1,4 +1,4 @@
-use crate::app::{App, InputMode};
+use crate::app::{App, InputMode, MessageKind};
 use crate::format::{display_path, format_age, format_due_time, format_overdue_duration};
 use crate::model::Todo;
 use chrono::{DateTime, Local, Utc};
@@ -10,7 +10,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Wrap},
 };
 
-const HELP_TEXT: &str = "Keyboard Commands:\n\nNavigation:\n  ↑↓ / jk : Navigate items\n  Shift+↑↓ / JK : Reorder items\n\nActions:\n  Space : Toggle completed\n  a : Add new todo\n  e : Edit selected todo\n  r : Reschedule selected todo\n  d : Delete selected todo\n  s : Suspend selected todo\n  h : Toggle hide completed\n  X : Clear all todos\n\nOther:\n  ? : Show this help\n  q : Quit application\n\nPress any key to close";
+const HELP_TEXT: &str = "Keyboard Commands:\n\nNavigation:\n  ↑↓ / jk : Navigate items\n  Shift+↑↓ / JK : Reorder items\n\nActions:\n  Space : Toggle completed\n  a : Add new todo\n  e : Edit selected todo\n  r : Reschedule selected todo\n  d : Delete selected todo\n  s : Suspend selected todo\n  h : Toggle hide completed\n  X : Clear all todos\n  u : Undo last change\n  Ctrl+R : Redo\n\nOther:\n  ? : Show this help\n  q : Quit application\n\nPress any key to close";
 
 pub fn ui(f: &mut Frame, app: &App) {
     let size = f.area();
@@ -173,7 +173,7 @@ fn render_input(f: &mut Frame, app: &App, area: Rect) {
         _ => "Input",
     };
     let title = match &app.message {
-        Some(msg) => format!("{} — {}", base_title, msg),
+        Some(msg) => format!("{} — {}", base_title, msg.text),
         None => base_title.to_string(),
     };
     // Scroll horizontally so the cursor stays visible in long inputs.
@@ -197,7 +197,11 @@ fn render_input(f: &mut Frame, app: &App, area: Rect) {
 fn render_info(f: &mut Frame, app: &App, area: Rect) {
     let now = Utc::now();
     let (metadata, color) = if let Some(msg) = &app.message {
-        (msg.clone(), Color::Red)
+        let color = match msg.kind {
+            MessageKind::Info => Color::Cyan,
+            MessageKind::Error => Color::Red,
+        };
+        (msg.text.clone(), color)
     } else if let Some(todo) = app.selected_todo() {
         let state = display_state(todo, now);
         let time_info = match (todo.due_date, todo.created_at) {
@@ -498,6 +502,28 @@ mod tests {
         let mut app = App::new(Vec::new(), Some(PathBuf::from("work-todos.json")));
         app.input_mode = InputMode::Help;
         assert!(render(&app).contains("work-todos.json"));
+    }
+
+    #[test]
+    fn message_color_follows_its_kind() {
+        use crate::app::{Message, MessageKind};
+        let color_of = |kind| {
+            let mut app = App::new(Vec::new(), None);
+            app.message = Some(Message {
+                text: "§".to_string(),
+                kind,
+            });
+            let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
+            terminal.draw(|f| ui(f, &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            (0..buffer.area.height)
+                .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+                .find(|&(x, y)| buffer[(x, y)].symbol() == "§")
+                .map(|pos| buffer[pos].fg)
+                .unwrap()
+        };
+        assert_eq!(color_of(MessageKind::Info), Color::Cyan);
+        assert_eq!(color_of(MessageKind::Error), Color::Red);
     }
 
     #[test]

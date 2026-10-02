@@ -4,7 +4,13 @@ use crate::storage::save_todos;
 use crate::text_input::TextInput;
 use chrono::{DateTime, Local, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+
+/// How many undo steps are kept (oldest are dropped). History is per session.
+const UNDO_LIMIT: usize = 100;
+/// Todo texts longer than this are shortened in undo labels and hints.
+const LABEL_TEXT_LIMIT: usize = 30;
 
 #[derive(PartialEq)]
 pub enum InputMode {
@@ -22,6 +28,35 @@ impl InputMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MessageKind {
+    Info,
+    Error,
+}
+
+/// Transient feedback shown in the Info panel (or the input box title).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Message {
+    pub text: String,
+    pub kind: MessageKind,
+}
+
+#[derive(Clone, Copy)]
+enum HistoryStep {
+    Undo,
+    Redo,
+}
+
+/// The todo list as it was before a change, so it can be restored.
+struct UndoEntry {
+    todos: Vec<Todo>,
+    selected: usize,
+    /// Describes the change, e.g. `Deleted "Call mom"`.
+    label: String,
+    /// Id of the todo being moved, so consecutive moves of it share one entry.
+    coalesce: Option<u32>,
+}
+
 pub struct App {
     pub todos: Vec<Todo>,
     /// Where todos are persisted; `None` disables saving (used in tests).
@@ -32,8 +67,19 @@ pub struct App {
     pub input: TextInput,
     editing_index: Option<usize>,
     pub hide_completed: bool,
-    /// Transient message (errors, hints) shown in the Info panel.
-    pub message: Option<String>,
+    pub message: Option<Message>,
+    undo_stack: VecDeque<UndoEntry>,
+    redo_stack: VecDeque<UndoEntry>,
+}
+
+/// `"Call mom"`, shortened with an ellipsis if long.
+fn quoted(text: &str) -> String {
+    if text.chars().count() > LABEL_TEXT_LIMIT {
+        let short: String = text.chars().take(LABEL_TEXT_LIMIT - 1).collect();
+        format!("\"{}…\"", short)
+    } else {
+        format!("\"{}\"", text)
+    }
 }
 
 impl App {
@@ -47,6 +93,8 @@ impl App {
             editing_index: None,
             hide_completed: false,
             message: None,
+            undo_stack: VecDeque::new(),
+            redo_stack: VecDeque::new(),
         }
     }
 
@@ -54,11 +102,26 @@ impl App {
         self.storage_path.as_deref()
     }
 
+    fn info(&mut self, text: String) {
+        self.message = Some(Message {
+            text,
+            kind: MessageKind::Info,
+        });
+    }
+
+    fn error(&mut self, text: String) {
+        self.message = Some(Message {
+            text,
+            kind: MessageKind::Error,
+        });
+    }
+
+    /// Persists the list. Call after setting any hint so a save error replaces it.
     fn save(&mut self) {
         if let Some(path) = &self.storage_path
             && let Err(e) = save_todos(path, &self.todos)
         {
-            self.message = Some(format!("Failed to save todos: {}", e));
+            self.error(format!("Failed to save todos: {}", e));
         }
     }
 
@@ -120,55 +183,146 @@ impl App {
         }
     }
 
+    /// Records the current list as an undo step, right before a change.
+    /// Call it only once the change is certain to happen (after guards and
+    /// no-op checks), so every recorded step undoes something real.
+    /// Consecutive calls with the same `coalesce` id share one step.
+    fn checkpoint(&mut self, label: String, coalesce: Option<u32>) {
+        self.redo_stack.clear();
+        if coalesce.is_some() && self.undo_stack.back().is_some_and(|top| top.coalesce == coalesce) {
+            return;
+        }
+        self.undo_stack.push_back(UndoEntry {
+            todos: self.todos.clone(),
+            selected: self.selected,
+            label,
+            coalesce,
+        });
+        if self.undo_stack.len() > UNDO_LIMIT {
+            self.undo_stack.pop_front();
+        }
+    }
+
+    fn undo(&mut self) {
+        self.restore(HistoryStep::Undo);
+    }
+
+    fn redo(&mut self) {
+        self.restore(HistoryStep::Redo);
+    }
+
+    /// Pops a step from the undo (or redo) stack, restores it, and pushes the
+    /// current state onto the other stack so the step can be reversed again.
+    fn restore(&mut self, step: HistoryStep) {
+        let (from, to, verb, done) = match step {
+            HistoryStep::Undo => (&mut self.undo_stack, &mut self.redo_stack, "undo", "Undid"),
+            HistoryStep::Redo => (&mut self.redo_stack, &mut self.undo_stack, "redo", "Redid"),
+        };
+        let Some(entry) = from.pop_back() else {
+            self.info(format!("Nothing to {}", verb));
+            return;
+        };
+        let message = format!("{}: {}", done, entry.label);
+        let current = std::mem::replace(&mut self.todos, entry.todos);
+        // `notified_at` is system state: keep the current value so restoring
+        // a snapshot never re-arms a notification that was already sent.
+        let notified: HashMap<u32, _> = current.iter().map(|t| (t.id, t.notified_at)).collect();
+        for todo in &mut self.todos {
+            if let Some(&notified_at) = notified.get(&todo.id) {
+                todo.notified_at = notified_at;
+            }
+        }
+        to.push_back(UndoEntry {
+            todos: current,
+            selected: self.selected,
+            label: entry.label,
+            coalesce: None,
+        });
+        // Undo/redo ends any run of moves: a later move starts a new step.
+        if let Some(top) = self.undo_stack.back_mut() {
+            top.coalesce = None;
+        }
+        self.selected = entry.selected;
+        self.fix_selection();
+        self.info(message);
+        self.save();
+    }
+
     /// Swaps the selected todo with the previous visible one.
     fn move_selected_up(&mut self) {
         let Some(current) = self.selected_index() else { return };
-        if let Some(prev) = self.prev_visible_before(current) {
-            self.todos.swap(current, prev);
-            self.selected = prev;
-            self.save();
-        }
+        let Some(prev) = self.prev_visible_before(current) else {
+            return;
+        };
+        self.move_todo(current, prev);
     }
 
     /// Swaps the selected todo with the next visible one.
     fn move_selected_down(&mut self) {
         let Some(current) = self.selected_index() else { return };
-        if let Some(next) = self.next_visible_after(current) {
-            self.todos.swap(current, next);
-            self.selected = next;
-            self.save();
-        }
+        let Some(next) = self.next_visible_after(current) else {
+            return;
+        };
+        self.move_todo(current, next);
+    }
+
+    fn move_todo(&mut self, from: usize, to: usize) {
+        let todo = &self.todos[from];
+        self.checkpoint(format!("Moved {}", quoted(&todo.text)), Some(todo.id));
+        self.todos.swap(from, to);
+        self.selected = to;
+        self.save();
     }
 
     fn toggle_completed(&mut self) {
         let Some(index) = self.selected_index() else { return };
+        let todo = &self.todos[index];
+        let verb = if todo.completed { "Reopened" } else { "Completed" };
+        let label = format!("{} {}", verb, quoted(&todo.text));
+        self.checkpoint(label.clone(), None);
         let todo = &mut self.todos[index];
         todo.completed = !todo.completed;
+        // The todo vanishes if completed todos are hidden: point at undo.
+        if !self.is_visible(index) {
+            self.info(format!("{} (u to undo)", label));
+        }
         self.save();
         self.fix_selection();
     }
 
     fn toggle_suspended(&mut self) {
         let Some(index) = self.selected_index() else { return };
-        let todo = &mut self.todos[index];
+        let todo = &self.todos[index];
         // Completed wins; `s` is a no-op so un-completing restores the prior suspended state.
         if todo.completed {
             return;
         }
+        let verb = if todo.suspended { "Resumed" } else { "Suspended" };
+        self.checkpoint(format!("{} {}", verb, quoted(&todo.text)), None);
+        let todo = &mut self.todos[index];
         todo.suspended = !todo.suspended;
         self.save();
     }
 
     fn delete_selected(&mut self) {
         let Some(index) = self.selected_index() else { return };
+        let label = format!("Deleted {}", quoted(&self.todos[index].text));
+        self.checkpoint(label.clone(), None);
         self.todos.remove(index);
+        self.info(format!("{} (u to undo)", label));
         self.save();
         self.fix_selection();
     }
 
     fn clear_all(&mut self) {
+        if self.todos.is_empty() {
+            return;
+        }
+        let label = format!("Cleared {} todos", self.todos.len());
+        self.checkpoint(label.clone(), None);
         self.todos.clear();
         self.selected = 0;
+        self.info(format!("{} (u to undo)", label));
         self.save();
     }
 
@@ -187,18 +341,22 @@ impl App {
     fn submit_input(&mut self) {
         let input = self.input.value().trim().to_string();
         let now = Local::now();
+        let mut changed = false;
 
         if self.input_mode == InputMode::Rescheduling {
-            if let Some(index) = self.editing_index
-                && let Some(todo) = self.todos.get_mut(index)
-            {
-                if input.is_empty() {
-                    todo.due_date = None;
+            if let Some(index) = self.editing_index.filter(|&i| i < self.todos.len()) {
+                let new_due = if input.is_empty() {
+                    None
                 } else if let Some(due) = parse_due_date(&input, now) {
-                    todo.due_date = Some(due);
+                    Some(due)
                 } else {
-                    self.message = Some(format!("Could not understand \"{}\" — schedule unchanged", input));
+                    self.error(format!("Could not understand \"{}\" — schedule unchanged", input));
                     return;
+                };
+                if self.todos[index].due_date != new_due {
+                    self.checkpoint(format!("Rescheduled {}", quoted(&self.todos[index].text)), None);
+                    self.todos[index].due_date = new_due;
+                    changed = true;
                 }
             }
         } else if !input.is_empty() {
@@ -209,27 +367,35 @@ impl App {
                 input
             };
             if text.is_empty() {
-                self.message = Some("Todo text cannot be empty".to_string());
+                self.error("Todo text cannot be empty".to_string());
                 return;
             }
-            if let Some(index) = self.editing_index {
-                if let Some(todo) = self.todos.get_mut(index) {
-                    todo.text = text;
-                    if new_due_date.is_some() {
-                        todo.due_date = new_due_date;
-                    }
+            if let Some(index) = self.editing_index.filter(|&i| i < self.todos.len()) {
+                // Apply the edit to a copy and compare whole todos, so any
+                // field an edit may touch is covered by the no-op check.
+                let mut edited = self.todos[index].clone();
+                edited.text = text;
+                edited.due_date = new_due_date.or(edited.due_date);
+                if edited != self.todos[index] {
+                    self.checkpoint(format!("Edited {}", quoted(&edited.text)), None);
+                    self.todos[index] = edited;
+                    changed = true;
                 }
-            } else {
+            } else if self.editing_index.is_none() {
+                self.checkpoint(format!("Added {}", quoted(&text)), None);
                 let mut todo = Todo::new(self.next_id(), text);
                 todo.due_date = new_due_date;
                 self.todos.push(todo);
                 self.selected = self.todos.len() - 1;
+                changed = true;
             }
         }
 
         self.input_mode = InputMode::Normal;
         self.editing_index = None;
-        self.save();
+        if changed {
+            self.save();
+        }
     }
 
     fn cancel_input(&mut self) {
@@ -241,6 +407,7 @@ impl App {
     /// Marks every todo that needs an overdue notification as notified at `now`,
     /// saves, and returns their texts for the caller to send. Stamping happens
     /// here, before sending, so a failed send is never retried every tick.
+    /// Not undoable: notification state is system state, not a user change.
     pub fn take_due_notifications(&mut self, now: DateTime<Utc>) -> Vec<String> {
         let mut texts = Vec::new();
         for todo in &mut self.todos {
@@ -261,10 +428,10 @@ impl App {
             InputMode::Normal => return self.handle_normal_key(code, modifiers),
             InputMode::Adding | InputMode::Editing | InputMode::Rescheduling => self.handle_text_key(code, modifiers),
             InputMode::ConfirmClear => {
-                if code == KeyCode::Char('y') {
+                self.input_mode = InputMode::Normal;
+                if code == KeyCode::Char('y') && modifiers.is_empty() {
                     self.clear_all();
                 }
-                self.input_mode = InputMode::Normal;
             }
             InputMode::Help => self.input_mode = InputMode::Normal,
         }
@@ -273,8 +440,13 @@ impl App {
 
     fn handle_normal_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> bool {
         self.message = None;
+        let ctrl = modifiers.contains(KeyModifiers::CONTROL);
         match code {
+            KeyCode::Char('r') if ctrl => self.redo(),
+            // Only explicitly bound Ctrl shortcuts act; Ctrl+D must not delete.
+            KeyCode::Char(_) if ctrl => {}
             KeyCode::Char('q') => return false,
+            KeyCode::Char('u') if modifiers.is_empty() => self.undo(),
             KeyCode::Down if modifiers.contains(KeyModifiers::SHIFT) => self.move_selected_down(),
             KeyCode::Up if modifiers.contains(KeyModifiers::SHIFT) => self.move_selected_up(),
             KeyCode::Char('J') => self.move_selected_down(),
@@ -495,6 +667,274 @@ mod tests {
         let mut restarted = App::new(todos, Some(path));
         assert!(restarted.take_due_notifications(Utc::now()).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn ctrl(app: &mut App, c: char) -> bool {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    fn message(app: &App) -> (&str, MessageKind) {
+        let msg = app.message.as_ref().expect("a message");
+        (msg.text.as_str(), msg.kind)
+    }
+
+    /// Runs `action` on a fresh three-todo list, checks it recorded exactly one
+    /// undo step, and that undo restores the original list.
+    fn assert_undoable(name: &str, action: impl Fn(&mut App)) {
+        let mut app = app_with(&["a", "b", "c"]);
+        app.selected = 1;
+        let before = app.todos.clone();
+        action(&mut app);
+        assert_ne!(app.todos, before, "{}: action changed nothing", name);
+        assert_eq!(app.undo_stack.len(), 1, "{}: expected one undo step", name);
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.todos, before, "{}: undo did not restore", name);
+        assert_eq!(app.selected, 1, "{}: selection not restored", name);
+    }
+
+    #[test]
+    fn every_action_is_one_undoable_step() {
+        assert_undoable("add", |app| {
+            press(app, KeyCode::Char('a'));
+            type_text(app, "new");
+            press(app, KeyCode::Enter);
+        });
+        assert_undoable("edit", |app| {
+            press(app, KeyCode::Char('e'));
+            type_text(app, "!");
+            press(app, KeyCode::Enter);
+        });
+        assert_undoable("reschedule", |app| {
+            press(app, KeyCode::Char('r'));
+            type_text(app, "tomorrow");
+            press(app, KeyCode::Enter);
+        });
+        assert_undoable("complete", |app| press(app, KeyCode::Char(' ')));
+        assert_undoable("suspend", |app| press(app, KeyCode::Char('s')));
+        assert_undoable("delete", |app| press(app, KeyCode::Char('d')));
+        assert_undoable("move", |app| press(app, KeyCode::Char('J')));
+        assert_undoable("clear all", |app| {
+            press(app, KeyCode::Char('X'));
+            press(app, KeyCode::Char('y'));
+        });
+    }
+
+    #[test]
+    fn no_op_actions_record_nothing() {
+        let mut app = app_with(&["a", "b"]);
+        app.todos[1].completed = true;
+        // Gives "a" a due date, so rescheduling to the same date can be checked.
+        let tomorrow = |app: &mut App| {
+            press(app, KeyCode::Char('r'));
+            type_text(app, "tomorrow");
+            press(app, KeyCode::Enter);
+        };
+        tomorrow(&mut app);
+
+        type Case<'a> = (&'a str, &'a dyn Fn(&mut App));
+        let cases: &[Case] = &[
+            ("move at the top", &|app| press(app, KeyCode::Char('K'))),
+            ("reschedule to the same date", &|app| tomorrow(app)),
+            ("suspend a completed todo", &|app| {
+                press(app, KeyCode::Char('j'));
+                press(app, KeyCode::Char('s'));
+            }),
+            ("move at the bottom", &|app| press(app, KeyCode::Char('J'))),
+            ("view state only", &|app| {
+                press(app, KeyCode::Char('k'));
+                press(app, KeyCode::Char('h'));
+                press(app, KeyCode::Char('h'));
+            }),
+            ("empty add", &|app| {
+                press(app, KeyCode::Char('a'));
+                press(app, KeyCode::Enter);
+            }),
+            ("cancelled add", &|app| {
+                press(app, KeyCode::Char('a'));
+                type_text(app, "x");
+                press(app, KeyCode::Esc);
+            }),
+            ("unchanged edit", &|app| {
+                press(app, KeyCode::Char('e'));
+                press(app, KeyCode::Enter);
+            }),
+            ("unparseable reschedule", &|app| {
+                press(app, KeyCode::Char('r'));
+                type_text(app, "gibberish");
+                press(app, KeyCode::Enter);
+                press(app, KeyCode::Esc);
+            }),
+            ("declined clear all", &|app| {
+                press(app, KeyCode::Char('X'));
+                press(app, KeyCode::Char('n'));
+            }),
+            ("Ctrl+Y does not confirm clear all", &|app| {
+                press(app, KeyCode::Char('X'));
+                ctrl(app, 'y');
+            }),
+            ("notification stamp", &|app| {
+                overdue(app, 0, 1);
+                app.take_due_notifications(Utc::now());
+            }),
+        ];
+        for (name, action) in cases {
+            let before = app.undo_stack.len();
+            action(&mut app);
+            assert_eq!(app.undo_stack.len(), before, "{} recorded an undo step", name);
+        }
+
+        // Clearing an already-empty schedule is a no-op too.
+        app.todos[0].due_date = None;
+        let before = app.undo_stack.len();
+        press(&mut app, KeyCode::Char('r'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.undo_stack.len(),
+            before,
+            "clearing an empty schedule recorded a step"
+        );
+    }
+
+    #[test]
+    fn redo_reapplies_and_new_changes_clear_it() {
+        let mut app = app_with(&["a", "b"]);
+        press(&mut app, KeyCode::Char('d'));
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.todos.len(), 2);
+        assert!(ctrl(&mut app, 'r'));
+        assert_eq!(app.todos.len(), 1);
+        assert_eq!(message(&app), ("Redid: Deleted \"a\"", MessageKind::Info));
+
+        press(&mut app, KeyCode::Char('u'));
+        press(&mut app, KeyCode::Char('s'));
+        ctrl(&mut app, 'r');
+        assert_eq!(message(&app), ("Nothing to redo", MessageKind::Info));
+        assert_eq!(app.todos.len(), 2);
+    }
+
+    #[test]
+    fn consecutive_moves_of_one_todo_are_one_step() {
+        let mut app = app_with(&["a", "b", "c", "d"]);
+        let original = app.todos.clone();
+        for _ in 0..3 {
+            press(&mut app, KeyCode::Char('J'));
+        }
+        assert_eq!(app.undo_stack.len(), 1);
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.todos, original);
+
+        // Another change ends the run.
+        press(&mut app, KeyCode::Char('J'));
+        press(&mut app, KeyCode::Char('s'));
+        press(&mut app, KeyCode::Char('J'));
+        assert_eq!(app.undo_stack.len(), 3);
+    }
+
+    #[test]
+    fn undo_ends_a_run_of_moves() {
+        // Move a, move b, undo; moving a again must be a new step, or the
+        // state after the first move would become unreachable.
+        let mut app = app_with(&["a", "b", "c", "d"]);
+        press(&mut app, KeyCode::Char('J')); // [b, a, c, d]
+        press(&mut app, KeyCode::Char('k'));
+        press(&mut app, KeyCode::Char('J')); // [a, b, c, d]
+        press(&mut app, KeyCode::Char('u')); // [b, a, c, d]
+        let after_first_move = app.todos.clone();
+        press(&mut app, KeyCode::Char('j'));
+        press(&mut app, KeyCode::Char('J')); // [b, c, a, d]
+        assert_eq!(app.undo_stack.len(), 2);
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.todos, after_first_move);
+    }
+
+    #[test]
+    fn undo_delete_restores_position_id_and_selection() {
+        let mut app = app_with(&["a", "b", "c"]);
+        app.selected = 1;
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(message(&app), ("Deleted \"b\" (u to undo)", MessageKind::Info));
+        app.selected = 0;
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!((app.todos[1].id, app.todos[1].text.as_str()), (1, "b"));
+        assert_eq!(app.selected, 1);
+        assert_eq!(message(&app), ("Undid: Deleted \"b\"", MessageKind::Info));
+    }
+
+    #[test]
+    fn undo_keeps_current_notification_state() {
+        let mut app = app_with(&["a", "b"]);
+        overdue(&mut app, 0, 1);
+        app.todos[0].due_date = Some(Utc::now() + chrono::Duration::minutes(1));
+        // Edit, then the todo becomes due and is notified, then undo the edit.
+        press(&mut app, KeyCode::Char('e'));
+        type_text(&mut app, "!");
+        press(&mut app, KeyCode::Enter);
+        let later = Utc::now() + chrono::Duration::minutes(2);
+        assert_eq!(app.take_due_notifications(later), ["a!"]);
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.todos[0].text, "a");
+        assert!(
+            app.take_due_notifications(later).is_empty(),
+            "undo re-armed a notification"
+        );
+
+        // A deleted todo keeps the state it had when it was deleted.
+        press(&mut app, KeyCode::Char('d'));
+        press(&mut app, KeyCode::Char('u'));
+        assert!(app.todos[0].notified_at.is_some());
+        assert!(app.take_due_notifications(later).is_empty());
+    }
+
+    #[test]
+    fn empty_history_says_so() {
+        let mut app = app_with(&["a"]);
+        press(&mut app, KeyCode::Char('u'));
+        assert_eq!(message(&app), ("Nothing to undo", MessageKind::Info));
+        ctrl(&mut app, 'r');
+        assert_eq!(message(&app), ("Nothing to redo", MessageKind::Info));
+    }
+
+    #[test]
+    fn history_is_bounded() {
+        let mut app = app_with(&["a"]);
+        for _ in 0..UNDO_LIMIT + 5 {
+            press(&mut app, KeyCode::Char('s'));
+        }
+        assert_eq!(app.undo_stack.len(), UNDO_LIMIT);
+    }
+
+    #[test]
+    fn completing_while_hidden_hints_and_undo_selects_it_again() {
+        let mut app = app_with(&["a", "b", "c"]);
+        app.hide_completed = true;
+        app.selected = 1;
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(message(&app), ("Completed \"b\" (u to undo)", MessageKind::Info));
+        assert_eq!(app.selected, 2);
+        press(&mut app, KeyCode::Char('u'));
+        assert!(!app.todos[1].completed);
+        assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn long_texts_are_shortened_in_labels() {
+        let long = "x".repeat(40);
+        let label = quoted(&long);
+        assert_eq!(label.chars().count(), LABEL_TEXT_LIMIT + 2);
+        assert!(label.ends_with("…\""));
+        assert_eq!(quoted("héllo"), "\"héllo\"");
+    }
+
+    #[test]
+    fn unbound_ctrl_letters_do_nothing() {
+        let mut app = app_with(&["a"]);
+        let before = app.todos.clone();
+        for c in ['d', 's', 'x', 'j', 'u'] {
+            assert!(ctrl(&mut app, c));
+        }
+        assert!(ctrl(&mut app, 'q'), "Ctrl+Q must not quit");
+        assert_eq!(app.todos, before);
+        assert!(app.input_mode == InputMode::Normal);
     }
 
     #[test]
