@@ -12,29 +12,19 @@ fn format_clock(hour: u32, min: u32) -> String {
     format!("{}:{:02}{}", hour12, min, am_pm)
 }
 
-/// "Today 3:00pm", "Tomorrow", "Mar 14", "Jan 02 2027", or "Overdue" for past days.
-pub fn format_due_time(due: DateTime<Utc>, now: DateTime<Local>) -> String {
-    let today = now.date_naive();
-    let due_local = due.with_timezone(&Local);
-    let due_date = due_local.date_naive();
-    let (hour, min) = (due_local.hour(), due_local.minute());
-
-    let day = if due_date == today {
-        "Today".to_string()
-    } else if due_date == today + chrono::Duration::days(1) {
-        "Tomorrow".to_string()
-    } else if due_local < now {
-        return "Overdue".to_string();
-    } else if due_date.year() == today.year() {
-        due_date.format("%b %d").to_string()
-    } else {
-        due_date.format("%b %d %Y").to_string()
-    };
-
-    if hour == 0 && min == 0 {
-        day
-    } else {
-        format!("{} {}", day, format_clock(hour, min))
+/// The full due date and time: "Today 3:00pm", "Tomorrow 9:00am", "Fri 9:00am"
+/// within the coming week, otherwise "Fri Oct 9, 9:00am" (with the year if it
+/// differs). Past dates are shown as dates too, never as "Overdue".
+pub fn format_due_long(due: DateTime<Utc>, now: DateTime<Local>) -> String {
+    let due = due.with_timezone(&Local);
+    let (today, date) = (now.date_naive(), due.date_naive());
+    let clock = format_clock(due.hour(), due.minute());
+    match (date - today).num_days() {
+        0 => format!("Today {}", clock),
+        1 => format!("Tomorrow {}", clock),
+        2..=6 => format!("{} {}", date.format("%a"), clock),
+        _ if date.year() == today.year() => format!("{}, {}", date.format("%a %b %-d"), clock),
+        _ => format!("{}, {}", date.format("%a %b %-d %Y"), clock),
     }
 }
 
@@ -170,9 +160,17 @@ mod tests {
                 .unwrap()
                 .with_timezone(&Utc)
         };
-        assert_eq!(format_due_time(at(3, 10, 15, 0), now), "Today 3:00pm");
-        assert_eq!(format_due_time(at(3, 11, 0, 0), now), "Tomorrow");
-        assert_eq!(format_due_time(at(3, 1, 9, 0), now), "Overdue");
-        assert_eq!(format_due_time(at(4, 2, 0, 0), now), "Apr 02");
+        // 2026-03-10 is a Tuesday.
+        assert_eq!(format_due_long(at(3, 10, 15, 0), now), "Today 3:00pm");
+        assert_eq!(format_due_long(at(3, 10, 9, 0), now), "Today 9:00am");
+        assert_eq!(format_due_long(at(3, 11, 0, 0), now), "Tomorrow 12:00am");
+        assert_eq!(format_due_long(at(3, 13, 9, 0), now), "Fri 9:00am");
+        assert_eq!(format_due_long(at(3, 17, 9, 0), now), "Tue Mar 17, 9:00am");
+        assert_eq!(format_due_long(at(3, 1, 9, 0), now), "Sun Mar 1, 9:00am");
+        let next_year = Local
+            .with_ymd_and_hms(2027, 1, 4, 18, 30, 0)
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(format_due_long(next_year, now), "Mon Jan 4 2027, 6:30pm");
     }
 }

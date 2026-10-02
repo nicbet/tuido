@@ -1,5 +1,5 @@
 use crate::app::{App, InputMode, MessageKind};
-use crate::format::{display_path, format_age, format_due_time, format_overdue_duration};
+use crate::format::{display_path, format_age, format_due_long, format_overdue_duration};
 use crate::model::Todo;
 use chrono::{DateTime, Local, Utc};
 use ratatui::{
@@ -172,9 +172,11 @@ fn render_input(f: &mut Frame, app: &App, area: Rect) {
         InputMode::Rescheduling => "Reschedule Todo (empty clears)",
         _ => "Input",
     };
-    let title = match &app.message {
-        Some(msg) => format!("{} — {}", base_title, msg.text),
-        None => base_title.to_string(),
+    let now = Local::now();
+    let title = match (&app.message, app.input_preview(now)) {
+        (Some(msg), _) => format!("{} — {}", base_title, msg.text),
+        (None, Some(due)) => format!("{} → {}", base_title, format_due_long(due, now)),
+        (None, None) => base_title.to_string(),
     };
     // Scroll horizontally so the cursor stays visible in long inputs.
     let inner_width = area.width.saturating_sub(4);
@@ -209,7 +211,7 @@ fn render_info(f: &mut Frame, app: &App, area: Rect) {
             (_, Some(created)) => format!(" ({})", format_age(created, now)),
             _ => String::new(),
         };
-        let due = || todo.due_date.map(|due| format_due_time(due, Local::now()));
+        let due = || todo.due_date.map(|due| format_due_long(due, Local::now()));
 
         let text = match state {
             DisplayState::Completed => format!("Status: Completed{}", time_info),
@@ -524,6 +526,17 @@ mod tests {
         };
         assert_eq!(color_of(MessageKind::Info), Color::Cyan);
         assert_eq!(color_of(MessageKind::Error), Color::Red);
+    }
+
+    #[test]
+    fn input_title_previews_the_parsed_date() {
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+        let mut app = App::new(Vec::new(), None);
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE);
+        for c in "Call mom tomorrow".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert!(render(&app).contains("Add Todo → Tomorrow 9:00am"));
     }
 
     #[test]

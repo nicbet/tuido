@@ -1,5 +1,5 @@
 use crate::model::Todo;
-use crate::schedule::{clean_text, parse_due_date};
+use crate::schedule::parse_due_date;
 use crate::storage::save_todos;
 use crate::text_input::TextInput;
 use chrono::{DateTime, Local, Utc};
@@ -70,6 +70,14 @@ pub struct App {
     pub message: Option<Message>,
     undo_stack: VecDeque<UndoEntry>,
     redo_stack: VecDeque<UndoEntry>,
+}
+
+/// Marks a newly entered due date that has already passed as notified, so no
+/// notification fires for a date the user just typed.
+fn stamp_if_past(todo: &mut Todo, now: DateTime<Utc>) {
+    if todo.due_date.is_some_and(|due| due <= now) {
+        todo.notified_at = Some(now);
+    }
 }
 
 /// `"Call mom"`, shortened with an ellipsis if long.
@@ -341,30 +349,35 @@ impl App {
     fn submit_input(&mut self) {
         let input = self.input.value().trim().to_string();
         let now = Local::now();
+        let now_utc = now.with_timezone(&Utc);
         let mut changed = false;
 
         if self.input_mode == InputMode::Rescheduling {
             if let Some(index) = self.editing_index.filter(|&i| i < self.todos.len()) {
                 let new_due = if input.is_empty() {
                     None
-                } else if let Some(due) = parse_due_date(&input, now) {
-                    Some(due)
                 } else {
-                    self.error(format!("Could not understand \"{}\" — schedule unchanged", input));
-                    return;
+                    // The whole input must be a date: "fri 3pm" must not silently drop "fri".
+                    match parse_due_date(&input, now) {
+                        Some(parsed) if parsed.rest.is_empty() => Some(parsed.due),
+                        _ => {
+                            self.error(format!("Could not understand \"{}\" — schedule unchanged", input));
+                            return;
+                        }
+                    }
                 };
                 if self.todos[index].due_date != new_due {
                     self.checkpoint(format!("Rescheduled {}", quoted(&self.todos[index].text)), None);
-                    self.todos[index].due_date = new_due;
+                    let todo = &mut self.todos[index];
+                    todo.due_date = new_due;
+                    stamp_if_past(todo, now_utc);
                     changed = true;
                 }
             }
         } else if !input.is_empty() {
-            let new_due_date = parse_due_date(&input, now);
-            let text = if new_due_date.is_some() {
-                clean_text(&input)
-            } else {
-                input
+            let (text, new_due_date) = match parse_due_date(&input, now) {
+                Some(parsed) => (parsed.rest, Some(parsed.due)),
+                None => (input, None),
             };
             if text.is_empty() {
                 self.error("Todo text cannot be empty".to_string());
@@ -378,6 +391,10 @@ impl App {
                 edited.due_date = new_due_date.or(edited.due_date);
                 if edited != self.todos[index] {
                     self.checkpoint(format!("Edited {}", quoted(&edited.text)), None);
+                    // Stamped after the no-op comparison, so it can't make a no-op edit count.
+                    if new_due_date.is_some() {
+                        stamp_if_past(&mut edited, now_utc);
+                    }
                     self.todos[index] = edited;
                     changed = true;
                 }
@@ -385,6 +402,7 @@ impl App {
                 self.checkpoint(format!("Added {}", quoted(&text)), None);
                 let mut todo = Todo::new(self.next_id(), text);
                 todo.due_date = new_due_date;
+                stamp_if_past(&mut todo, now_utc);
                 self.todos.push(todo);
                 self.selected = self.todos.len() - 1;
                 changed = true;
@@ -396,6 +414,20 @@ impl App {
         if changed {
             self.save();
         }
+    }
+
+    /// The due date the current input would set, for the live preview.
+    /// Mirrors `submit_input`, so it never promises a date that Enter rejects:
+    /// rescheduling needs the whole input to be a date, adding and editing
+    /// need some title text left over.
+    pub fn input_preview(&self, now: DateTime<Local>) -> Option<DateTime<Utc>> {
+        let parsed = parse_due_date(self.input.value().trim(), now)?;
+        let valid = match self.input_mode {
+            InputMode::Rescheduling => parsed.rest.is_empty(),
+            InputMode::Adding | InputMode::Editing => !parsed.rest.is_empty(),
+            _ => false,
+        };
+        valid.then_some(parsed.due)
     }
 
     fn cancel_input(&mut self) {
@@ -482,6 +514,11 @@ impl App {
 
     fn handle_text_key(&mut self, code: KeyCode, modifiers: KeyModifiers) {
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
+        // A pending error stays until the user changes the input; the live
+        // preview takes its place in the title.
+        if !matches!(code, KeyCode::Enter | KeyCode::Esc) {
+            self.message = None;
+        }
         match code {
             KeyCode::Enter => self.submit_input(),
             KeyCode::Esc => self.cancel_input(),
@@ -935,6 +972,87 @@ mod tests {
         assert!(ctrl(&mut app, 'q'), "Ctrl+Q must not quit");
         assert_eq!(app.todos, before);
         assert!(app.input_mode == InputMode::Normal);
+    }
+
+    #[test]
+    fn past_dates_typed_by_the_user_do_not_notify() {
+        let mut app = app_with(&["a"]);
+        press(&mut app, KeyCode::Char('a'));
+        type_text(&mut app, "Old thing 2025-01-01");
+        press(&mut app, KeyCode::Enter);
+        assert!(app.todos[1].notified_at.is_some());
+
+        app.selected = 0;
+        press(&mut app, KeyCode::Char('r'));
+        type_text(&mut app, "2025-01-01");
+        press(&mut app, KeyCode::Enter);
+        assert!(app.todos[0].notified_at.is_some());
+
+        assert!(app.take_due_notifications(Utc::now()).is_empty());
+    }
+
+    #[test]
+    fn edit_with_the_same_parsed_date_is_a_no_op() {
+        let mut app = app_with(&[]);
+        press(&mut app, KeyCode::Char('a'));
+        type_text(&mut app, "Call mom tomorrow");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.todos[0].text, "Call mom");
+        let steps = app.undo_stack.len();
+
+        press(&mut app, KeyCode::Char('e'));
+        type_text(&mut app, " tomorrow");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.undo_stack.len(), steps);
+        assert_eq!(app.todos[0].text, "Call mom");
+    }
+
+    #[test]
+    fn reschedule_needs_the_whole_input_to_be_a_date() {
+        let mut app = app_with(&["a"]);
+        press(&mut app, KeyCode::Char('r'));
+        type_text(&mut app, "fri 3pm");
+        assert_eq!(app.input_preview(Local::now()), None);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.input_mode == InputMode::Rescheduling);
+        assert_eq!(app.message.as_ref().map(|m| m.kind), Some(MessageKind::Error));
+        assert_eq!(app.todos[0].due_date, None);
+
+        // Editing the input clears the error so the preview can show.
+        press(&mut app, KeyCode::Home);
+        type_text(&mut app, "next ");
+        assert!(app.message.is_none());
+        press(&mut app, KeyCode::End);
+        for _ in 0.."fri 3pm".len() {
+            press(&mut app, KeyCode::Backspace);
+        }
+        type_text(&mut app, "friday 3pm");
+        assert!(app.input_preview(Local::now()).is_some());
+        press(&mut app, KeyCode::Enter);
+        assert!(app.input_mode == InputMode::Normal);
+        assert!(app.todos[0].due_date.is_some());
+    }
+
+    #[test]
+    fn preview_only_while_typing() {
+        let mut app = app_with(&["a"]);
+        assert_eq!(app.input_preview(Local::now()), None);
+        press(&mut app, KeyCode::Char('a'));
+        type_text(&mut app, "Plan next sprint");
+        assert_eq!(app.input_preview(Local::now()), None);
+        type_text(&mut app, " tomorrow");
+        assert!(app.input_preview(Local::now()).is_some());
+    }
+
+    #[test]
+    fn preview_matches_what_enter_accepts() {
+        // A date with no title would be rejected on Enter, so it isn't previewed.
+        let mut app = app_with(&[]);
+        press(&mut app, KeyCode::Char('a'));
+        type_text(&mut app, "tomorrow");
+        assert_eq!(app.input_preview(Local::now()), None);
+        press(&mut app, KeyCode::Enter);
+        assert!(app.input_mode == InputMode::Adding, "Enter should have been rejected");
     }
 
     #[test]

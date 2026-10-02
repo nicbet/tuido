@@ -175,13 +175,22 @@ Run `tuido` in your terminal to start the application. See [Configuration](#conf
 
 ### Adding Tasks with Due Dates
 
-When adding or editing a task, you can include scheduling information using natural language:
+End a task with a date or time and tuido schedules it. While you type, the input box title previews the due date it will set (for example `Add Todo → Fri 9:00am`).
 
-- "Buy groceries tomorrow at 5pm"
-- "Call dentist 3pm"
-- "Standup at 9:30"
+| You type | Due |
+| --- | --- |
+| `Call dentist 3pm`, `Standup at 9:30`, `Ship by 21:00` | That time today, or tomorrow if it has passed |
+| `Buy groceries today`, `… tomorrow`, `… tonight` | 9:00am that day (`tonight`: 8:00pm) |
+| `Call mom Friday`, `… on Friday`, `… next Friday` | The coming Friday (1–7 days ahead), 9:00am |
+| `Stretch in 30 minutes`, `… in an hour`, `… in 2 hours` | That exact moment |
+| `Water plants in 3 days`, `… in a week` | Same time of day, that many days ahead |
+| `Taxes 2026-04-15`, `Dentist Mar 14`, `… 14 March`, `… Mar 14 2027` | 9:00am that day (a date without a year that has passed means next year) |
 
-Times can be in 12-hour (9pm, 11:30am) or 24-hour (21:30) format. A time that has already passed today is scheduled for tomorrow; "tomorrow" without a time defaults to 9am. The scheduling words are removed from the task text.
+Days combine with times: `Friday at 3pm`, `tomorrow 9:30`, `Mar 14 at 5pm`, `in 2 weeks at 10am`. Times can be 12-hour (`9pm`, `11:30am`) or 24-hour (`21:30`). Weekday names must be spelled out (`Friday`, not `fri`), and month names need a day number (`Mar 14`).
+
+**Only the end of the text is read as a date.** `Watch The Tonight Show` and `Plan next sprint` stay plain titles, and `Call dentist 3pm about the crown` gets no due date (put the time at the end instead). The date words are removed from the task text: `Call mom Friday at 3pm` becomes `Call mom`. Punctuation after the date stops it being recognized (`Call mom Friday.`), and a number like `3:16` at the end is always read as a time. The preview shows what was understood before you press Enter.
+
+When rescheduling (`r`), type only the date, for example `Friday 3pm` or `in 2 hours`. An empty input clears the due date.
 
 ### Notifications
 
