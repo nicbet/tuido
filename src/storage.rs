@@ -157,23 +157,35 @@ fn tmp_path_for(path: &Path) -> PathBuf {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub(crate) mod test_support {
+    use std::path::PathBuf;
+    use tempfile::TempDir;
 
-    fn temp_file(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("tuido-test-{}-{}", std::process::id(), name));
-        let _ = fs::remove_dir_all(&dir);
-        dir.join("todos.json")
+    /// A fresh, existing temporary directory and the path of a `todos.json`
+    /// inside it that doesn't exist yet.
+    /// Keep the guard alive with `let (_dir, path) = …` — not `let (_, path)`,
+    /// which drops it at once — because dropping it deletes the directory.
+    pub(crate) fn temp_todo_file() -> (TempDir, PathBuf) {
+        let dir = tempfile::Builder::new().prefix("tuido-test-").tempdir().unwrap();
+        let path = dir.path().join("todos.json");
+        (dir, path)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::temp_todo_file;
+    use super::*;
 
     #[test]
     fn missing_file_is_empty() {
-        assert!(load_todos(&temp_file("missing")).unwrap().is_empty());
+        let (_dir, path) = temp_todo_file();
+        assert!(load_todos(&path).unwrap().is_empty());
     }
 
     #[test]
     fn round_trips_todos() {
-        let path = temp_file("roundtrip");
+        let (_dir, path) = temp_todo_file();
         let todos = vec![Todo::new(0, "a".to_string()), Todo::new(1, "b".to_string())];
         save_todos(&path, &todos).unwrap();
         let loaded = load_todos(&path).unwrap();
@@ -183,8 +195,7 @@ mod tests {
 
     #[test]
     fn corrupt_file_is_an_error_and_left_untouched() {
-        let path = temp_file("corrupt");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let (_dir, path) = temp_todo_file();
         fs::write(&path, "[{\"broken").unwrap();
         assert!(load_todos(&path).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), "[{\"broken");
@@ -192,8 +203,7 @@ mod tests {
 
     #[test]
     fn loads_files_written_before_notified_at_existed() {
-        let path = temp_file("legacy-format");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let (_dir, path) = temp_todo_file();
         let legacy = r#"[{"id":0,"text":"old","completed":false,"suspended":false,"due_date":null,"created_at":null}]"#;
         fs::write(&path, legacy).unwrap();
 
@@ -212,9 +222,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn saving_through_symlink_keeps_the_link() {
-        let link = temp_file("symlink");
+        let (_dir, link) = temp_todo_file();
         let dir = link.parent().unwrap();
-        fs::create_dir_all(dir).unwrap();
         let real = dir.join("synced.json");
         save_todos(&real, &[Todo::new(0, "old".to_string())]).unwrap();
         std::os::unix::fs::symlink(&real, &link).unwrap();
@@ -228,7 +237,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn saving_through_dangling_symlink_creates_the_target() {
-        let link = temp_file("dangling");
+        let (_dir, link) = temp_todo_file();
         let dir = link.parent().unwrap();
         fs::create_dir_all(dir.join("sync")).unwrap();
         // Relative link, as `ln -s sync/new.json todos.json` would create.
@@ -243,9 +252,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn dangling_symlink_into_missing_directory_is_an_error() {
-        let link = temp_file("unmounted");
+        let (_dir, link) = temp_todo_file();
         let dir = link.parent().unwrap();
-        fs::create_dir_all(dir).unwrap();
         std::os::unix::fs::symlink(dir.join("unmounted/todos.json"), &link).unwrap();
 
         assert!(save_todos(&link, &[Todo::new(0, "x".to_string())]).is_err());
@@ -346,7 +354,8 @@ mod tests {
 
     #[test]
     fn explicit_path_needs_an_existing_directory() {
-        let path = temp_file("explicit");
+        let (dir, _) = temp_todo_file();
+        let path = dir.path().join("missing").join("todos.json");
         assert!(validate_explicit_path(&path).unwrap_err().contains("does not exist"));
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         assert_eq!(validate_explicit_path(&path).unwrap(), path);

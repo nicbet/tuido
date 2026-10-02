@@ -692,9 +692,7 @@ mod tests {
 
     #[test]
     fn notification_state_survives_restart() {
-        let dir = std::env::temp_dir().join(format!("tuido-test-{}-notify", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let path = dir.join("todos.json");
+        let (_dir, path) = crate::storage::test_support::temp_todo_file();
 
         let mut app = App::new(vec![Todo::new(0, "a".to_string())], Some(path.clone()));
         overdue(&mut app, 0, 1);
@@ -703,7 +701,6 @@ mod tests {
         let todos = crate::storage::load_todos(&path).unwrap();
         let mut restarted = App::new(todos, Some(path));
         assert!(restarted.take_due_notifications(Utc::now()).is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn ctrl(app: &mut App, c: char) -> bool {
