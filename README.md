@@ -6,7 +6,7 @@ A TUI todo app built with Rust, featuring a text-based user interface for managi
 
 - **Task Management**: Add, edit, delete, and toggle completion of todos
 - **Scheduling**: Set due dates using natural language (e.g., "tomorrow at 9pm", "3pm")
-- **Notifications**: Desktop notifications for overdue tasks
+- **Notifications**: Desktop notifications when tasks become overdue
 - **Suspend Tasks**: Temporarily suspend tasks without deleting them
 - **Persistent Storage**: Todos are saved to `~/.config/tuido/todos.json`
 - **Keyboard-Driven**: Efficient navigation and editing with keyboard shortcuts
@@ -114,16 +114,26 @@ Run `tuido` in your terminal to start the application.
 
 - **Navigation**:
   - `↑/↓` or `j/k`: Move up/down in the list
-  - `Space`: Toggle completion of selected task
-  - `s`: Suspend/unsuspend selected task
+  - `Shift+↑/↓` or `J/K`: Reorder the selected task
 
 - **Task Management**:
   - `a`: Add new task
   - `e`: Edit selected task
+  - `r`: Reschedule selected task (submit empty to clear the schedule)
+  - `Space`: Toggle completion of selected task
+  - `s`: Suspend/unsuspend selected task
   - `d`: Delete selected task
-  - `r`: Reschedule selected task
+  - `h`: Hide/show completed tasks
+  - `X`: Clear all tasks (asks for confirmation)
+
+- **While typing**:
+  - `←/→`, `Home/End`: Move the cursor
+  - `Ctrl+W`: Delete previous word
+  - `Ctrl+U`: Delete to start of line
+  - `Enter`: Save, `Esc`: Cancel
 
 - **General**:
+  - `?`: Show help
   - `q`: Quit the application
 
 ### Adding Tasks with Due Dates
@@ -132,13 +142,13 @@ When adding or editing a task, you can include scheduling information using natu
 
 - "Buy groceries tomorrow at 5pm"
 - "Call dentist 3pm"
-- "Finish report by Friday"
+- "Standup at 9:30"
 
-The app will parse the time and set appropriate due dates. Times can be in 12-hour (9pm) or 24-hour (21:30) format.
+Times can be in 12-hour (9pm, 11:30am) or 24-hour (21:30) format. A time that has already passed today is scheduled for tomorrow; "tomorrow" without a time defaults to 9am. The scheduling words are removed from the task text.
 
 ### Notifications
 
-The app checks for overdue tasks on startup and shows desktop notifications. Ensure your system supports notifications (Linux: notify-send, macOS: built-in, Windows: toast notifications).
+The app shows a desktop notification when a task becomes overdue, both on startup and while it is running. Ensure your system supports notifications (Linux: notify-send, macOS: built-in, Windows: toast notifications).
 
 ## Configuration
 
